@@ -1,0 +1,254 @@
+# Fix: CI release smoke test now builds the binary first
+
+The Release workflow (`.github/workflows/release.yml`) failed in the "Smoke-test built binary" step on Windows/macOS because `cargo-packager` does not build the binary itself (and `cargo test` only leaves test-harness artifacts), so `target/<triple>/release/logotomy` never existed. Added a `cargo build --release --target ${{ matrix.target }}` step before the smoke test (which also guarantees the binary exists for the packager step).
+
+# Native OS installers for release (cargo-packager)
+
+Releases now publish **native installers** instead of raw binary tarballs/zips. `.github/workflows/release.yml` builds `logotomy-<version>-setup.exe` (NSIS) on Windows, `.deb` + `.AppImage` on Ubuntu, and `.dmg` (Apple Silicon + Intel) on macOS, uploading them plus `checksums.sha256` to the GitHub Release. The packaging config lives in `Cargo.toml` under `[package.metadata.packager]` (identifier, icons, NSIS/macOS/Linux options). New committed icon assets in `assets/icons/` (128×128 app icon as requested, plus 256/512 PNGs and `logotomy.ico`); on Windows the `.exe` itself embeds the icon + version info via `build.rs`/`winres`, and the NSIS installer uses the same 128-px icon. Manual "binary → installer" steps are documented in `docs/release.md`; `scripts/package-release.sh` wraps build+package for one command.
+
+# Embed Space Mono font for log text
+
+Log text (the central log view, the pin preview modal, and the pinned-lines panel) is now rendered with the embedded **Space Mono** monospace font instead of egui's default mono. The four Space Mono faces (Regular/Bold/Italic/BoldItalic, ~410 KB) are baked into the binary via `include_bytes!` and registered under a dedicated `space_mono` egui font family in `src/ui/fonts/` — so **only log text** uses Space Mono, while the rest of the UI (timeline axis labels, settings, template panel) keeps its default fonts. Space Mono is SIL OFL 1.1 licensed (`OFL.txt` ships next to the TTFs; credited in the README). The A−/A+ font size controls still drive the log text size. Tests: font embedding/registration unit tests.
+
+# Timeline filter controls, delete confirmations, pin editing, new pop-out icon
+
+GUI timeline/filter/pin UX batch:
+- **Filter tooltip with match count** — hovering a timeline filter label/eye now shows the full filter text plus its total match count (e.g. `Some Filter (334 occurrences)`) instead of just the truncated name (`src/ui/timeline/view.rs`).
+- **Delete-filter confirmation is always-on by default** — new persistent setting `skip_filter_delete_confirm` (`~/.logotomy/settings.json`, default `false` = always ask). The "Remove Filter" popup gained a **"Do not ask me again"** checkbox that flips and saves the setting; Settings popup gained the matching *Do not ask before deleting a filter* checkbox (`src/core/settings.rs`, `src/ui/app/view.rs`, `src/ui/settings/view.rs`).
+- **Timeline bottom toolbar** — when filters exist, two left-aligned buttons under the minimap: **Hide/Show all filters** (toggles every filter lane at once, never touches "Everything Else", re-enables it if the view would go blank) and **Clear all filters** (confirmation popup → removes them all). New `LogTab::toggle_all_lanes` / `LogTab::clear_all_filters` + `pending_clear_filters` state (`src/ui/timeline/view.rs`, `src/ui/app/model.rs`).
+- **Pin editing** — each pinned card gained an ✏️ **Edit** button that reopens the same pin creation window pre-filled (`LogTab::pin_edit_index`); `save_pin` now updates the entry in place instead of appending. The pin modal moved to a shared `log_view::pin_modal_ui` drawn at the app level so it works from any dock tab / detached viewport (`src/ui/app/model.rs`, `src/ui/pin_viewer/view.rs`, `src/ui/log_view/view.rs`, `src/ui/app/view.rs`).
+- **`window_resize.svg` redesigned** — replaced the single-rectangle-with-corner-arrows with an asymmetric double-rectangle (overlapping windows) icon so the pop-out affordance reads clearly.
+- Tests: settings serde default + round-trip for the new flag, `toggle_all_lanes` (toggles all lanes, keeps Everything Else, blanks-safe), `clear_all_filters`, and `save_pin` edit-in-place vs new-pin behavior.
+
+# Rename app to logotomy + app icon + settings links
+
+Renamed the project from `waddaheck` to `logotomy` everywhere: Cargo package/lib/bin name, the single binary + MCP CLI (`logotomy` / `logotomy --mcp`), the data dir `~/.waddaheck` → `~/.logotomy`, the log filename, the MCP server name + config strings in the integrate guide, examples, release workflow, and docs. The app icon is now the bundled `src/ui/icons/logotomy_256.png` — decoded at startup via the `image` crate and set as the native window icon, and rendered in the top-left corner of the toolbar next to the "LOGotomoy" app name. The settings popup gained **Report Bug** (opens the GitHub issues page) and **About** (opens the GitHub repo) buttons, both opening the default browser via a new cross-platform `open_url` helper in `src/ui/settings/view.rs`.
+# MCP: `with_filtered_log=true` with zero filters short-circuits with a "no log" hint
+
+All 8 MCP analysis tools (`find_occurrences`, `raw_log`, `log_sequence`, `summarize_log`, `get_timeline_histogram`, `get_template_anomalies`, `get_template`, `get_template_samples`) now **short-circuit** when invoked with `with_filtered_log=true` (the default) while `filter_count == 0`: instead of silently scanning the whole file they return a successful `{"comment":"no log","reason":"with_filtered_log=true and no filter count = 0, so no log. Try with with_filtered_log=false for full log file traversal or add filter (tool: filters_add)"}`. The check runs immediately after document resolution (before other arg validation) and applies uniformly in headless + GUI modes. `with_filtered_log=false` restores full-file traversal with zero filters. Tests: `with_filtered_log_no_filters_short_circuits_every_tool` (all 8 tools) plus full-log-path assertions; existing full-log tool tests now pass `with_filtered_log:false`.
+
+# MCP: filter tools (filters_get/filters_add/filters_remove) + filtered-log default for all analysis tools
+
+`src/mcp.rs` now keeps a per-log filter keyword set (`ServerState::filters`) managed by three new tools — `filters_get`, `filters_add` (case-insensitive dedupe, 20-cap), `filters_remove` (by position) — sharing `[{id, filter_text}]` shapes across headless (`log_id`) and GUI (`_active`) modes. Every analysis tool (`find_occurrences`, `raw_log`, `log_sequence`, `summarize_log`, `get_timeline_histogram`, `get_template_anomalies`, `get_template`, `get_template_samples`) gained an optional trailing `with_filtered_log` flag that defaults to **true**: results are then restricted to the union of the filter set's matches (the GUI "Everything Else" lane is never included), and `false` restores the full log. With no filters set the filtered view is the whole log, so existing calls are unchanged. In GUI mode the filter set round-trips with the served tab's live lanes via new `poll_mcp_filters`/`sync_mcp_filters` (mirroring the active-doc dirty-flag pattern). Tests: `filters_get_add_remove_flow`, `filters_cap_and_missing_args_error`, `filters_work_headless_with_log_id`, `with_filtered_log_defaults_true_and_excludes_everything_else`, per-tool filtered-view tests, `schema_advertises_filter_tools_and_with_filtered_log`.
+
+# Fix: MCP dirty-doc swap no longer panics on stale viewport indices
+
+When an MCP tool call mutated the served document, the GUI's `poll_mcp_dirty` swapped in the new (often trimmed/smaller) `LogDocument`, but tab view state (`context_line`, `viewport_range`, scroll/selection anchors) still held line indices from the previous larger window. On the next frame `ensure_visible`/`ensure_viewport_visible` fed those stale indices into the unchecked `ts_at()` (`src/core/document.rs:167`), panicking on an out-of-bounds access (`index 1060, len 1000`) and aborting the app. Fix (`src/ui/app/model.rs`): a new `LogTab::clamp_view_state()` clamps all doc-positioned view state to the current window after the dirty-doc swap, and `ensure_visible`/`ensure_viewport_visible` now use bounds-checked `ts_at_opt` and bail out gracefully instead of letting `ts_at` panic. Regression tests: `ensure_viewport_visible_ignores_stale_out_of_range_viewport`, `ensure_visible_ignores_stale_out_of_range_context_line`, `clamp_view_state_brings_stale_indices_back_in_range`.
+
+# Fix: MCP HTTP server force-`Connection: close` on error responses
+
+Error (4xx/5xx) HTTP responses from the MCP server (`src/mcp.rs`) now include a `Connection: close` header. Clients hitting a rejected path — a request with a missing or wrong secret token, a bad JSON body, or an unknown route — previously had to wait on the keep-alive socket (in practice timing out with 0 bytes, e.g. `GET /health` without the token). Now the server tells the client to disconnect so failed requests terminate immediately. Added unit + end-to-end regression tests (`http_response_error_statuses_send_connection_close`, `http_rejects_missing_secret_with_404_and_closes`).
+
+# MCP: dynamic port + secret-token URL, top-bar start/stop + copy-instruction
+
+The GUI-started MCP server no longer uses a port from settings — it binds an OS-assigned dynamic port and appends a fresh random 6-digit secret token to its URL (`http://127.0.0.1:PORT/SECRET`), which the server enforces (wrong/missing token → 404). "Start MCP"/"Stop MCP" and "Copy MCP instruction" now live in the top toolbar next to Settings (shown when a log tab is active), starting MCP auto-copies the connection instruction and shows a 5s toast, and the settings port input was removed (Start is disabled with "MCP already running" while a server is up).
+
+# Show detected log format + date format in the status bar
+
+The top toolbar now shows the active log's detected format and date format (e.g. `format: json · date: field-based`, `format: plain · date: ISO-8601`, `format: cef · date: none`) via a new `LogotomyApp::selected_log_format_status()` helper in `src/ui/app/model.rs`, rendered as a muted label in `src/ui/app/view.rs`. JSON reports `field-based` since its timestamp comes from a field rather than a positional date format.
+
+# Add Apple Unified Logging System (ULS) text format
+
+Added `src/core/format/os_log.rs` to recognize the columnar `log show` text exports (default and `--style compact`), mapping the `0x…` thread/activity columns, PID/TTL, and mixed-case level (`Default`/`Info`/`Debug`/`Error`/`Fault`) into a clean `OSLOG <level> <process> <message>` Drain header while the ISO `+HHMM` timestamp feeds the timeline. Renamed the previous `oslog.rs` (the simplified `[Subsystem:Category] LEVEL:` console shape) to `oslog_console.rs` so the two Apple formats are unambiguous; the binary `tracev3` store remains out of scope.
+
+# Add pluggable log-format detection & normalization (format → time → Drain)
+
+Reworked the parsing pipeline so the log *format* is detected first (JSON, CEF, RFC 5424, logcat brief, iOS OSLog, or `plain` fallback), then the timestamp family, then each line is normalized per-format before Drain mining. Replaced `src/core/timestamp.rs`'s closed `Kind` enum with one-file-per-type module trees: `src/core/time/` (iso, slash, syslog, apache, epoch, logcat_threadtime, glog) and `src/core/format/` (json, cef, rfc5424, logcat_brief, oslog, plain). Each recognizer/extractor has its own unit tests plus a common validator test asserting exactly one intended format is picked; structured formats now mine field-aware templates (JSON schema + `msg`, CEF pipe headers, RFC 5424 structured headers, logcat tags, OSLog subsystem/category). `LogDocument` gained `format_name()`/`time_format_name()`; existing plain/iOS/bench logs still detect as `plain` + ISO.
+
+# Merge redundant MCP keyword tools and fold log_size into summarize_log
+
+Reduced the MCP tool surface for tighter agent tool-selection: removed `get_occurrence_count` and `get_occurrence_time_range` (their count + `first_seen`/`last_seen` are now returned by `find_occurrences`, which also gained optional `after`/`before` time-window filtering), and merged `log_size` into `summarize_log` (now returns `template_size_bytes` and `sequence_estimate_bytes`). Headless mode drops from 14 to 11 tools, GUI mode from 12 to 9. Updated `src/mcp.rs`, its tests, and the tool tables in `docs/mcp.md`, `AI_ASSISTANT.md`, `UserGuide.md`, and `feature.md`.
+
+# Redesign MCP tool API to a stateless, self-describing canonical set
+
+Reworked the MCP tool surface around how AI agents actually investigate logs. Retired three overlapping tools (`get_logs_within_time` → `raw_log`, `get_templates` → `get_template`, `get_log_sequence` → `log_sequence`) and added a `log_size` budget tool plus GUI-only `trim`. `summarize_log`, `get_timeline_histogram`, and `get_template_anomalies` now accept optional `start`/`end` ranges (line number or time), and `log_sequence`/`raw_log`/`get_template` take line- or time-bounded ranges too. Responses self-describe size (`log_size` returns `template_size_bytes`/`sequence_estimate_bytes`; `log_sequence`/`raw_log` return `total`/`returned`/`truncated`) instead of requiring separate `*_size()` pre-calls. Added `LogDocument::trim_range`, a shared `resolve_bound`/`resolve_range` helper, and 20 new unit tests (trim_range, dense/collapse/truncated log_sequence, raw_log line+time, log_size, get_template, trim cache invalidation, and range-restriction on summarize/histogram/anomalies). `src/mcp.rs`, `src/core/document.rs`.
+
+# Rename app "keywords" to "text filters" and the saved keyword-set "Templates" dropdown to "Saved filters"
+
+The GUI's text-filtering feature is renamed from "keywords" to "filters"/"text filter" across code identifiers, comments, UI labels, and docs (e.g. `tab.keywords`→`tab.filters`, `Keyword`→`Filter`, `MAX_KEYWORDS`→`MAX_FILTERS`, timeline `keyword_buckets`→`filter_buckets`, module `src/ui/keywords/`→`src/ui/filters/`). The toolbar dropdown that saved/loaded keyword sets was previously labeled "Templates", colliding with Drain template mining; it is now "Saved filters" (`core/template.rs`→`core/saved_filter.rs`, `Settings::default_template`→`default_filter`, `~/.logotomy/templates/`→`filters/`). Drain log-structure mining and the MCP tool API (which still uses the `keyword` parameter) are intentionally untouched.
+
+# File-open progress shown in its own new log tab; release matrix targets only supported OS/archs
+
+Opening a file (Recent, Open dialog, or drag-drop) while at least one log tab is open now creates and auto-focuses a dedicated new log tab that shows the loading progress — it no longer appears "inside" the current log tab's content area. Loading tabs appear in the top tab bar as `<name> ⏳` with an inline cancel, and become the normal log tab once loading finishes (`active_loader` state in `LogotomyApp`). Also updated `.github/workflows/release.yml` to keep only latest runners (ubuntu-latest, macos-latest, windows-latest) and to publish binaries solely for windows x86_64, ubuntu/linux x86_64, and mac arm (Apple Silicon) + x86_64 — dropping the `ubuntu-24.04-arm` (aarch64 linux) build.
+
+# Recenter timeline zoom when log-view shadow scrolls out of view
+
+When scrolling the log view scrolls the visible-range shadow (window shadow) completely outside the current timeline zoom window, the timeline view is now recentered on the shadow's midpoint (preserving the zoom span). Previously only the shadow band moved while the timeline zoom window stayed frozen, so the user could lose their position. Added `LogTab::ensure_viewport_visible()`, called from `update_viewport_range`.
+
+# CI + release workflows: native runners, no cross, iOS-log tests & benchmarks
+
+Updated `.github/workflows/rust.yml` (CI) to run the `gen_ios_logs` example tests explicitly (`cargo test --release --example gen_ios_logs`) and to benchmark against a generated `iOS-100K.log` (`gen_ios_logs -- 100K` then `bench -- iOS-100K.log ERROR user_id`) instead of the no-arg synthetic log. Rewrote `.github/workflows/release.yml` to build each target natively on its own runner — `ubuntu-latest` (x86_64 linux), `ubuntu-24.04-arm` (aarch64 linux), `macos-14` (Apple Silicon), `macos-13` (Intel), `windows-latest` (x86_64) — removing the `use_cross` flag, `taiki-e/setup-cross-toolchain-action`, and the `:arm64` cross system-deps step. Each release build now also runs the full test suite (main app + example) and an iOS-log benchmark before packaging.
+
+# Rewrite iOS test log generator in Rust: deterministic PCG64, no Python, 100K/1M sizes
+
+Replaced the Python-in-shell generator with a pure-Rust Cargo example (`examples/gen_ios_logs.rs`). The generator uses a seeded PCG64 (`rand_pcg`), so the same `--seed` produces byte-identical output on every platform — no Python, no cross-version drift. It supports arbitrary sizes (default 1K + 10K, plus 100K and 1M via `--all` or positional args) with streaming `BufWriter` generation so 1M lines stays memory-safe. Messages are token-parametrized with ~30 seeded value generators (user IDs, IPs, status codes, UUIDs, durations, etc.), source files grew 12→20, threads/PIDs and timestamps (bursty 1–5 lines/sec, random microseconds) are randomized, and FAULT lines carry multi-frame crash stacks. Every size starts from the same seed, so output is byte-identical across runs and smaller files are exact prefixes of larger ones. Added 7 unit tests (determinism, prefix property, token scanner, level distribution, FAULT frames, exact count). `rand` + `rand_pcg` added as dev-dependencies. Removed the `examples/gen_ios_logs.sh` wrapper (the cargo example is the canonical entry point) and gave `examples/profile_pipeline.rs` an optional logfile argument so it can profile the generated iOS logs (defaults to its own synthetic ~64MB log).
+
+# Fix clustering quality + 4x parsing throughput: token-based masking, learned headers, Drain tuning
+
+Reworked the log-parsing pipeline for both clustering quality and speed. Masking is now token-based (scalar byte heuristics, no regex on the hot path) with `key=value` keys preserved (`status=200` → `status=<NUM>`) and a per-document memo cache; a header learner samples the first N lines to force-mask consistently-dynamic header slots (host/pid/thread); Drain got quality fixes (sim_th 0.4→0.5, wildcards score half-credit in similarity, >70%-wildcard templates stop attracting weak matches) and perf fixes (FxHashMap, stack-rendered length keys); ISO timestamp parsing got a scalar fast path replacing chrono strptime. New "Log Parsing" settings section exposes `sim_threshold` and `header_sample_lines`. Result on the 64MB bench log: 6 → 26 MB/s, 0 wildcard-degraded templates (was: templates collapsing to `<*>` after 4-5 words). Added `examples/profile_pipeline.rs` for per-phase timing and a clustering-quality regression test.
+
+# Add pre-mining masking for Drain template clustering
+
+Added `src/core/masking.rs` with a `LogMasker` that replaces dynamic values (IPs, IPv6, UUIDs, hex IDs, URLs, file paths, emails, inline JSON, times/durations, numbers) with semantic placeholders (`<IP>`, `<HEX>`, `<UUID>`, etc.) before Drain clustering. This improves template quality by clustering structurally-similar lines that differ only in dynamic values. Uses `LazyLock<Regex>` for zero-cost compilation, `Cow<'_, str>` for zero-allocation fast paths, and a byte-scan pre-check to skip regex work on simple lines. Integrated into `document.rs`'s analysis pipeline after timestamp stripping. Added 21 unit tests and 1 integration test.
+
+# Restructure src/ui folder for consistent module organization
+
+Renamed and reorganized UI modules for clarity: `app_model.rs` → `app/model.rs`, `app_view.rs` → `app/view.rs`, `timeline_panel/` → `timeline/`, `settings_viewer/` → `settings/`, `keywords.rs` → `keywords/view.rs`, and all `*_view.rs` files → `view.rs`. Each UI feature now follows a consistent folder pattern with `mod.rs` + `view.rs` (and `model.rs` where state is needed). Updated all imports and module references throughout the codebase.
+
+# Remove dead code: unused context_panel module, empty model files, unused Theme fields, _tz_marker
+
+Removed the entire `src/ui/context_panel/` module (never referenced from any code path), four empty model files (`log_view/model.rs`, `pin_viewer/pin_viewer_model.rs`, `timeline_panel/timeline_panel_model.rs`, `settings_viewer/settings_viewer_model.rs`), six unused `Theme` fields (`chip_text`, `status_green`, `progress_bg`, `progress_fill`, `template_id`, `timestamp`), the unused `context_radius` field on `LogTab`, and the `_tz_marker()` helper in `src/core/timestamp.rs` (along with its now-unused `TimeZone` import). All icons and their `#[allow(dead_code)]` markers are intentionally kept.
+
+# Timeline: 20 keywords, fixed-height always-visible panel, eye/trash lane controls
+
+The timeline now supports up to 20 keyword lanes (was 6) and is rendered in a fixed-height top panel so the whole timeline — histogram, all lanes, axis labels, and the zoom/minimap strip — is always fully visible and can never be shrunk by the user. Each keyword lane draws a straight 1px line in the keyword's color across the full lane width. Lane filtering now uses visible/invisible (eye) SVG icons instead of check/uncheck, and each keyword lane has a trash icon that opens a confirmation dialog before removal. The "Everything Else" lane stays first, uses the eye toggle, and cannot be removed. The top keyword chip row (with ✕ buttons) was removed since removal now lives in each lane. The keyword input is disabled at the 20-keyword cap. The timeline can still be popped out into its own window via a header button.
+
+# Replace emoji/text icons with embedded SVG icons
+
+All UI icons now use actual SVG files from `icons/` embedded directly into the binary via `include_bytes!`. The new `src/ui/icons.rs` module renders SVGs to textures using `resvg` + `tiny-skia` (pure Rust, cross-platform, no system deps) with a global texture cache keyed by (icon, color, size). Icons adapt to dark/light theme via `currentColor` CSS injection. The `resvg` crate is gated behind the `gui` feature so MCP-only builds stay lean.
+
+# Fix Windows CI: skip mandatory shared lock, use in-place writes in tests
+
+`load_inner()` now skips `try_lock_shared()` on Windows (where `LockFile` is mandatory and would block log writers from appending, breaking live tailing). The same-size-content-change test uses an in-place write instead of `std::fs::write` (which truncates and fails with `ERROR_USER_MAPPED_FILE` on Windows). The file-shrink test is gated to non-Windows since `SetEndOfFile` is refused on a mapped file — the mmap itself prevents shrinking on Windows.
+
+# Fix selection count for filtered logs
+
+The drag-selection popup now correctly counts the number of selected lines when the log view is filtered (e.g. by a keyword). It previously calculated `end - start + 1`, which was incorrect for non-contiguous selections, and now counts the actual visible lines within the selection range.
+
+# Compression-first MCP tools for low-token AI log analysis
+
+Added 5 analysis tools (available in both headless and GUI modes): `summarize_log` (one-call orientation: stats, top/error-ish templates, biggest time gaps, densest minute), `get_log_sequence` (window around a line/time with consecutive same-template runs collapsed — 10–50× token reduction), `get_timeline_histogram` (tiny `{x, counts}` distribution for whole log / keyword / template), `get_template_anomalies` (rare, first-seen-late, bursty templates), and `get_template_samples` (n concrete lines per template). `find_occurrences` gained `format="refs"` (anchors only, no raw text) and `context=N` (collapsed lines around each hit). Shared core functions serve both modes; GUI mode still hides `log_id`.
+
+# Fix overflow-leaf catch-all defeated by normal similarity threshold
+
+`child()` now returns `(&mut Node, bool)` where the bool is true only when bucketing under `"*"` due to capacity overflow; `add_line()` tracks this across token-routing levels and uses a permissive threshold of `0.0` at overflow leaves, so same-shape overflow lines cluster together and wildcard out instead of being split into separate clusters.
+
+Replaced the Cline-only `.clinerules/` setup with a single source of truth: `AI_ASSISTANT.md` (compact rules + vital facts + short structure) and `AI_ASSISTANT_DETAIL.md` (the former `.clinerules/Project.md`, moved to top level). All assistant entry-point files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `SKILL.md`, `.clinerules/Follow.md`) are now identical 2-line pointers to `AI_ASSISTANT.md`, so Claude, Codex, Gemini, and Cline all read the same canonical context with zero drift.
+
+# Strip timestamps before Drain template mining for cleaner templates
+
+`TimestampExtractor::extract` now returns `Option<(i64, Range<usize>)>` including the byte-offset span of the matched timestamp. `LogDocument` stores these spans in a new `ts_spans` field and strips the timestamp from each line before passing it to Drain, using a temporary `Cow::Owned` allocation only for timestamped lines. This produces significantly cleaner templates (e.g. `INFO request from <*> completed in <*>ms` instead of a separate template for every unique timestamp value).
+
+# Fix MCP server port not freed on stop — shutdown flag + error popup
+
+When stopping MCP from the GUI, `stop_mcp()` now signals a shutdown `AtomicBool` flag and joins the server thread, causing the HTTP listener loop to exit and release the port. Previously the thread kept running indefinitely, blocking the port on restart. On bind failure (e.g. port in use), an error popup is shown in the UI explaining the failure. The `run_http` function now takes a `shutdown: Arc<AtomicBool>` parameter and uses non-blocking accept with a 100ms sleep poll loop.
+
+# Dual-mode MCP server: simplified GUI tools (no log_id) + headless tools preserved
+
+When MCP is started from the GUI, the server now exposes 5 simplified tools (`get_occurrence_count`, `get_occurrence_time_range`, `get_logs_within_time`, `find_occurrences`, `get_templates`) that operate on the currently active log without requiring a `log_id` parameter. The `load_log`/`list_logs`/`close_log` tools are hidden in GUI mode. Headless mode (`logotomy --mcp`) retains all 8 original tools. The active tab's document is shared directly (no disk reload), and MCP-originated mutations are auto-refreshed in the UI via a dirty flag. The MCP start button is disabled when no tabs are open with a "Open a log file first" hint. The serving tab shows a "📡 filename (MCP)" badge.
+
+# Consolidated MCP, Integrate, and Settings menus under a single Settings popup
+
+Moved the MCP server controls and AI integration guide out of standalone top-bar buttons into the Settings popup. Created a new `src/ui/settings_viewer/` module to host all settings-related UI. MCP status now shows a green/gray circle indicator with hover tooltip showing the running URL. Port input is disabled when MCP is running. Integration guide opens as a modal Window from a button inside settings. Code blocks in the guide are now theme-aware (dark/light backgrounds).
+
+# Fixed pop-out windows: restored show_viewport_immediate block that was accidentally deleted during popup refactoring
+
+The `ctx.show_viewport_immediate(...)` call that creates detached child viewport windows was accidentally removed when replacing `egui::Window` popups with `egui::Area`-based ones. Restored it between the CentralPanel and the MCP dropdown popup section.
+
+# Fixed context menus and popups for egui 0.35 proper usage
+
+Replaced all 5 `egui::Area`-based dropdowns (MCP, Integrate, Recent, Settings, Templates) with close-on-click-outside behavior. Replaced the selection popup `egui::Window` (used as floating popup with `title_bar(false)`) with `egui::Area` + `Frame::popup` for proper dismissal. Pin modal, new/rename template modals remain as `egui::Window` (correct usage for dialogs). Context menus via `context_menu()` are already correct for egui 0.35.
+
+# Upgraded egui from 0.31 to 0.35 LTS
+
+Upgraded all GUI dependencies: `eframe` 0.31 → 0.35, `egui_dock` 0.16 → 0.20, `rfd` 0.15 → 0.17. Fixed breaking changes: `TopBottomPanel`/`SidePanel` → `Panel::top`/`Panel::right`, `default_width` → `default_size`, `ctx.style()` → `ctx.style_of(Theme::from_dark_mode(...))`, `ctx.screen_rect()` → `ctx.globally_used_rect()`, `ctx.used_rect()` → `ctx.globally_used_rect()`, `ui.close_menu()` → `ui.close()`, `egui::Theme::default()` → `egui::Theme::default_style()`. Removed `show_viewport_deferred` usage (requires `Fn + 'static`) and the detached viewport feature. Removed test_app.rs binary. All 30 tests pass.
+
+# Updated egui from 0.31 to 0.32
+
+Upgraded all GUI dependencies: `eframe` 0.31 → 0.32, `egui_dock` 0.16 → 0.17, `rfd` 0.15 → 0.17. Fixed the `ui.close_menu()` deprecation in favor of `ui.close()`. No API breakages from the egui 0.32 release were encountered (the new popup/menu APIs are additive, not breaking). All 30 tests pass with zero warnings.
+
+# Unified Pin & Analyze into single Pin feature — sorted cards, "…" gaps, time deltas, Enter/Esc modal
+
+Removed separate Pin (pinned_lines) and Analyze (analyses) features. Replaced both with a single `PinEntry` struct storing line range, all line numbers, timestamps, and optional user comment. Right-click "📌 Pin" and drag-selection "📌 Pin" both open the same modal (Enter to save, Esc to cancel, Shift+Enter for newline). Bottom panel rewritten: pins sorted by start timestamp, shown as framed cards with bold comment (if any), log lines in smaller font, "…" between non-consecutive lines, and "after 2 sec" style duration labels between pins.
+
+# Max line width tracking, non-selectable line numbers, keyword background alpha, removed color marker
+
+Added `max_line_width` to `LogDocument` (computed during load) to enable horizontal scrolling in the log view. Split line numbers into a separate non-interactive label with `{n}:` format so they aren't selectable during drag. Removed the `▌` color marker character and replaced it with a keyword-color background at ~0.2 alpha on matched spans. Added TODO for future bold keyword support.
+
+# Fix selection popup buttons not responding to clicks (Pin / Analyze / Cancel)
+
+Removed `ui.close_menu()` calls from the selection popup buttons inside `egui::Area`. `close_menu()` is designed for egui's context menu system, not standalone `Area` popups, and was interfering with button click event propagation. Also added `drag_start_pos = None` cleanup to the Analyze button handler (was missing compared to Pin/Cancel).
+
+# Trim Log: right-click context menu to trim lines before/after a selected line
+
+Added "Trim right" (← ✂️) and "Trim left" (→ ✂️) options to the right-click context menu in both the timeline and log views. When triggered, the document is trimmed in-place: per-line arrays are narrowed, templates are re-mined, and keywords + timeline are rebuilt for the new range. A trim indicator (✂️ N / M lines) with a "↺ Reset" button appears in the log view toolbar when the document is trimmed. The `LogDocument` now stores `trim_start`/`trim_end` bounds and keeps the full mmap intact. 7 unit tests cover trim_left, trim_right, composition, reset, edge cases, timestamp preservation, and template rebuild.
+
+# Fix detached view returns to original docked position instead of tabbing next to timeline
+
+When a popped-out view window is closed, the dock layout is now restored from a full `DockState` snapshot saved before the first pop-out, preserving the original vertical split arrangement (Timeline top, Log middle, Pinned bottom) instead of collapsing the returned tab alongside whatever is currently focused.
+
+# Fix detached viewport window: black screen, not closing, stale tab index
+
+`update_detached` was a stub that only showed a placeholder label and didn't set theme visuals, causing a black window. Close handling didn't clean up `viewport_map` or `detached_views`, so eframe kept recreating the window every frame. Also fixed stale tab index in `viewport_map` by re-resolving via path lookup instead of storing a raw `usize` that goes stale on tab reorder/removal. Switched from `show_viewport_deferred` (empty closure) to `show_viewport_immediate` with inline rendering so the child viewport actually renders content.
+
+# Fix log view left alignment + refactor show() into helpers
+
+Replaced `add_sized` with `allocate_ui_with_layout` + `Layout::left_to_right(Align::Center).with_main_justify(true)` so log text is left-aligned instead of centered (add_sized forces `Layout::centered_and_justified` internally). Broke the monolithic `show()` into 6 focused helpers: `show_toolbar`, `compute_pending_scroll_offset`, `render_row`, `apply_context_actions`, `draw_scroll_indicator`, `update_viewport_range`. All existing behavior preserved.
+
+# Fix log view row-height drift and scroll-to-line accuracy
+
+Row heights now match the virtual layout contract exactly: `item_spacing.y` is set to 0 before `show_rows` so egui's internal `row_height_with_spacing == row_height`, and each row is rendered with `add_sized` + `truncate()` to prevent wrapping. Scroll-to-line uses `vertical_scroll_offset` computed before `show_rows` (deterministic, same-frame) instead of the broken `scroll_to_rect` in content coordinates. The "lines visible" label moved into the top toolbar so the ScrollArea gets the full available height.
+
+# Fix diamond click not updating log view when line is outside visible range
+
+Moved `scroll_to_rect` inside the `show_rows` callback so the scroll request targets the correct ScrollArea, and force `viewport_range` to include the target line on the same frame so the timeline shadow immediately covers the selection marker.
+# Diamond click centers log view; double-click on timeline also selects + centers
+
+Replaced `vertical_scroll_offset` with `ui.scroll_to_rect(…, Align::Center)` inside `show_rows` so the selected line is reliably scrolled to center view on every click.
+
+# Persistent settings (recent files, dark mode, MCP port) + file logging
+
+Settings (dark mode, MCP port, recent files list) are now persisted to `~/.logotomy/settings.json` and logging writes to both stderr and a rotating file in `~/.logotomy/logs/`.
+
+# Timeline shadow position shift (viewport_range miscalculation)
+
+Fixed four bugs causing the timeline viewport shadow to drift right of the selection marker: double height subtraction, off-by-one in last_virtual, Sequence domain 0-vs-1 mismatch, and out-of-bounds map_to_real fallback.
+
+# Top bar alignment, timeline shadow/marker, keyword labels, log view expansion
+
+Unified toolbar control heights, added theme-aware viewport shadow colors, clamped shadow range to always cover context_line, made active keyword lane labels bigger/bolder, and expanded log view to full available height.
+
+# Toolbar alignment + timeline marker/shadow consistency fix
+
+Flattened add-keyword section to match toolbar height, left-aligned status/MCP/Integrate controls, and expanded viewport shadow to include context_line when a click just happened so the selection marker is never outside the shadow band.
+
+# Dashboard UI revamp: full-width timeline, viewport shadow, compact add-keyword, theme toggle, larger diamonds, log view expansion
+
+Removed wasted 120px label column when no keywords exist, added viewport shadow band linking scroll position to timeline, moved add-keyword to toolbar, bumped theme toggle to far right, enlarged diamonds, and reclaimed log view height by removing collapsed-panel hint.
+
+# Pin/Analysis, timeline ■/□ markers, inter-tick durations, prominent keyword add, scroll bar
+
+Added right-click pin/analysis system with collapsible bottom panel, replaced checkbox lane toggles with ■/□ markers, drew duration labels between tick pairs, wrapped keyword add in a prominent frame, and added a scroll-position indicator bar.
+
+# Single binary (GUI + MCP server merged)
+
+Merged separate GUI and MCP binaries into a single `logotomy` binary with an `--mcp` flag, sharing loaded documents and ServerState between modes via a `gui` feature gate.
+
+# Dark/Light mode & logging
+
+Replaced hardcoded colors with a `Theme` struct (30 semantic colors, dark/light constructors) and added `log`/`env_logger` for structured logging to stderr and file.
+
+# Timeline layout improvements
+
+Moved keyword labels to a compact left column with truncation+tooltip, added 1px density lines per lane, pan/zoom hint icons, full-height histogram, and larger axis font.
+
+# Timeline zoom, pan fixes
+
+Replaced `powi` with `powf` for continuous zoom that works on trackpad and mouse, and fixed erratic panning by using a direct pixel-to-value shift.
+
+# MCP Server — Streamable HTTP transport
+
+Replaced raw TCP with full HTTP/1.1 (JSON-RPC, SSE, CORS, health check) plus static port selector and stdio command path copy in GUI.
+
+# Timeline lane toggles, log filtering, font size, color markers, smart axis
+
+Added lane checkboxes with log filtering, increased legend width/font, smart axis labels (drops redundant date/hour), A−/A+ font size controls, and per-line keyword color markers.
+
+# Remove keyword crash
+
+Fixed index-out-of-bounds panic when removing keywords by bounding lane iteration to both keyword_buckets and keywords lengths; added unit test for length invariance.
+
+
+# AI Coding Agent integration popup
+
+Added a "🤖 Integrate" button that opens a scrollable popup with per-agent config instructions and copy buttons for Claude Desktop, Claude Code, Cline, Cursor, GitHub Copilot Chat, and OpenAI Codex.
