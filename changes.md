@@ -1,3 +1,20 @@
+# Fix: log-view search & double-click keyword highlights were never shown
+
+In `render_row` (`src/ui/log_view/view.rs`), every `LayoutJob` section's background was being overwritten with the row-selection colour (`galley.format.background = bg`), which erased the per-span search and keyword highlight backgrounds that `line_job`/`append_highlighted` paint behind matched text. As a result neither search-box matches nor double-clicked keywords showed any highlight. Removed that overwrite so the themed `search_highlight_bg` / `keyword_highlight_bg` (the "text highlight colour") render on every visible matching span, on every row, and re-apply as you scroll (selection tint still applies to non-highlighted spans). Regression test: `line_job_preserves_search_and_keyword_highlight_backgrounds`.
+
+# Fix: log-view header ▲/▼/✕ buttons were inert; double-click no longer populates the search box
+
+Two log-view navigation fixes (`src/ui/log_view/view.rs`):
+- The **▲ / ▼ / ✕ buttons** in the search box did nothing when clicked. Root cause: `icons::icon_image` returns an `egui::Image`, which only senses **hover** by default, so `Response::clicked()` was always false. They now get `.sense(egui::Sense::click())`, making Previous/Next match and Clear search work (arrows stay disabled when there are no matches; hover tooltips still show).
+- **Double-click** on a log line now only paints the keyword highlight and no longer populates the search box (`find_input`) nor triggers egui's native word text-selection. The content label is now `.selectable(false)` (mirroring the line numbers). Highlighting stays case-insensitive and persists across scrolling until cleared by Esc or a single click — matching the originally intended behavior.
+
+# Fix: log-view search controls alignment, Enter-to-search, and case-insensitive double-click highlight
+
+Three log-view navigation fixes (`src/ui/log_view/view.rs`, `src/ui/app/model.rs`):
+- Search controls are now **left-aligned** after the status ("N lines") text + separator instead of being right-aligned by a `right_to_left` layout in the toolbar.
+- **Enter** in the search box now actually runs the search. Previously the handler checked `response.has_focus()`, but egui surrenders focus (and the event) on Enter in a singleline `TextEdit`, so the branch never fired; it now uses the documented `response.lost_focus() && key_pressed(Enter)` idiom and re-requests focus.
+- **Double-click keyword highlight** now matches **case-insensitively** (`build_find_automaton(…, true)`), so every case variant of a word highlights across the log view, consistent with the case-insensitive find box. Regression test: `keyword_highlight_is_case_insensitive`.
+
 # Log view: header search box + double-click keyword highlight
 
 The log view now has two lightweight, ephemeral navigation aids that sit inside the log view and never touch the filter set:

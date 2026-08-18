@@ -677,11 +677,12 @@ impl LogTab {
         self.find_automaton = None;
     }
 
-    /// Set the keyword highlight (double-click). Case-sensitive.
+    /// Set the keyword highlight (double-click). Case-insensitive, matching the
+    /// find box, so every case variant of the word highlights across the view.
     pub fn set_keyword_highlight(&mut self, kw: Option<String>) {
         self.keyword_highlight = kw.clone();
         self.keyword_automaton = kw
-            .map(|k| search::build_find_automaton(&k, false))
+            .map(|k| search::build_find_automaton(&k, true))
             .flatten()
             .map(Arc::new);
     }
@@ -1833,6 +1834,30 @@ mod tests {
         assert_eq!(tab.find_matches, vec![0, 2]);
         assert_eq!(tab.find_pos, Some(0));
         assert_eq!(tab.context_line, Some(0));
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn keyword_highlight_is_case_insensitive() {
+        let path = write_temp(
+            "2026-07-19T10:00:00.000Z INFO Error starting\\n\
+             2026-07-19T10:00:01.000Z WARN error retry\\n\
+             2026-07-19T10:00:02.000Z INFO ERROR final\\n",
+        );
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+
+        // Double-clicking a word must paint every case variant of it across the
+        // view, matching the case-insensitive find box (regression: keyword
+        // automaton used to be case-sensitive, highlighting only the exact-case
+        // occurrence).
+        tab.set_keyword_highlight(Some("Error".to_string()));
+        let ac = tab.keyword_automaton.expect("keyword automaton must be built");
+        assert!(ac.find_iter("Error starting").next().is_some());
+        assert!(ac.find_iter("error retry").next().is_some());
+        assert!(ac.find_iter("ERROR final").next().is_some());
+        assert_eq!(ac.find_iter("nothing here").next(), None);
 
         std::fs::remove_file(path).ok();
     }

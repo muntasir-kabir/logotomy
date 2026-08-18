@@ -155,8 +155,9 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                             context_trim = Some(TrimAction::TrimLeft(i));
                         }
                         Some(RowAction::Keyword(kw)) => {
-                            tab.set_keyword_highlight(Some(kw.clone()));
-                            tab.find_input = kw;
+                            // Only paint the keyword highlight; never touch the
+                            // search box (Esc / single-click clears it).
+                            tab.set_keyword_highlight(Some(kw));
                         }
                         _ => {}
                     }
@@ -531,10 +532,11 @@ fn show_toolbar(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme, _max_visible
         
         show_line_count(ui, tab, theme);
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            show_search_ui(ui, tab, theme);
-            ui.add_space(SCROLL_BAR_WIDTH + 8.0);
-        });
+        // Search controls sit left-aligned, right after the status text, separated
+        // by a separator (not flushed to the right of the toolbar).
+        ui.separator();
+        ui.add_space(8.0);
+        show_search_ui(ui, tab, theme);
     });
 }
 
@@ -549,13 +551,14 @@ fn show_search_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                 .desired_width(200.0),
         );
 
-        if input_resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        if input_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             let trimmed = tab.find_input.trim();
             if trimmed != tab.find_query {
                 tab.start_find(trimmed.to_string());
             } else {
                 tab.find_next();
             }
+            // Regain focus so a second Enter (or more typing) keeps working.
             input_resp.request_focus();
         }
 
@@ -566,21 +569,21 @@ fn show_search_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             ui.label(RichText::new("no matches").size(11.0).color(theme.warning));
         }
 
-        if ui.add_enabled(!tab.find_matches.is_empty(), icons::icon_image(ui.ctx(), Icon::ArrowUp, 13.0, theme.text))
+        if ui.add_enabled(!tab.find_matches.is_empty(), icons::icon_image(ui.ctx(), Icon::ArrowUp, 13.0, theme.text).sense(egui::Sense::click()))
             .on_hover_text("Previous match")
             .clicked()
         {
             tab.find_prev();
         }
 
-        if ui.add_enabled(!tab.find_matches.is_empty(), icons::icon_image(ui.ctx(), Icon::ArrowDown, 13.0, theme.text))
+        if ui.add_enabled(!tab.find_matches.is_empty(), icons::icon_image(ui.ctx(), Icon::ArrowDown, 13.0, theme.text).sense(egui::Sense::click()))
             .on_hover_text("Next match")
             .clicked()
         {
             tab.find_next();
         }
 
-        if ui.add(icons::icon_image(ui.ctx(), Icon::Close, 13.0, theme.text))
+        if ui.add(icons::icon_image(ui.ctx(), Icon::Close, 13.0, theme.text).sense(egui::Sense::click()))
             .on_hover_text("Clear search")
             .clicked()
         {
@@ -760,13 +763,14 @@ fn render_row(
                 line_num_job.append(&format!("{:>7}: ", idx + 1), 0.0, line_num_fmt);
                 ui.add(egui::Label::new(line_num_job).selectable(false));
 
-                // Log content label — clickable for selection.
-                let mut content_job = job;
-                for galley in &mut content_job.sections {
-                    galley.format.background = bg;
-                }
+                // Log content label — clickable for selection. `line_job` already
+                // bakes the correct per-section background (selection tint on
+                // non-highlighted spans, search/keyword highlight colours on
+                // matches); do NOT overwrite it, or highlights are erased.
+                let content_job = job;
                 let content_resp = ui.add(
                     egui::Label::new(content_job)
+                        .selectable(false)
                         .sense(egui::Sense::click()),
                 );
 
@@ -1209,5 +1213,47 @@ mod tests {
     #[test]
     fn keyword_at_past_eol_returns_none() {
         assert_eq!(keyword_at("hi", 5), None);
+    }
+
+    #[test]
+    fn line_job_preserves_search_and_keyword_highlight_backgrounds() {
+        let path = write_temp("2026-07-19T10:00:00.000Z INFO error starting\n");
+        let doc = LogDocument::open(&path).unwrap();
+        let theme = Theme::dark();
+        let font_id = crate::ui::fonts::log_font(12.0);
+
+        // Search match must carry the search highlight background.
+        let search_ac = logotomy::core::search::build_find_automaton("error", true);
+        let hl = Highlights {
+            filters: &[],
+            filter_ac: None,
+            search_ac: search_ac.as_ref(),
+            keyword_ac: None,
+        };
+        let job = line_job(&doc, &hl, 0, false, font_id.clone(), &theme);
+        assert!(
+            job.sections
+                .iter()
+                .any(|s| s.format.background == theme.search_highlight_bg),
+            "search match must carry the search highlight background"
+        );
+
+        // Keyword match must carry the keyword highlight background.
+        let keyword_ac = logotomy::core::search::build_find_automaton("error", true);
+        let hl = Highlights {
+            filters: &[],
+            filter_ac: None,
+            search_ac: None,
+            keyword_ac: keyword_ac.as_ref(),
+        };
+        let job = line_job(&doc, &hl, 0, false, font_id, &theme);
+        assert!(
+            job.sections
+                .iter()
+                .any(|s| s.format.background == theme.keyword_highlight_bg),
+            "keyword match must carry the keyword highlight background"
+        );
+
+        std::fs::remove_file(path).ok();
     }
 }
