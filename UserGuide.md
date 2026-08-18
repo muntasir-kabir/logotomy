@@ -106,6 +106,8 @@ cargo build --release --no-default-features
 - The right edge has a **black scroll-position indicator bar** showing where you are in the file.
 - Log lines render in the embedded **Space Mono** monospace font (SIL OFL 1.1 — see the README thanks section); the **A− / A+** toolbar buttons change the size from 8 to 24 px.
 - Filters you add (below) are **highlighted inline**, in the filter's color.
+- **Search box** (right side of toolbar): type a string and press **Enter** to find all occurrences in the visible log lines. Amber highlights mark every match. Use **▲/▼** (or Up/Down arrows) to step through matches; **Left/Right** arrows step when the search box is not focused. Press **Esc** to clear the search, or **Esc** again to clear a keyword highlight.
+- **Double-click any word** in a log line to highlight every occurrence of that word in cyan. The word is also pre-filled into the search box — press **Enter** to turn it into a full search. Single-click anywhere clears the keyword highlight.
 
 ### Filter bookmarks
 - The add section is prominently framed with a heading "🔑 Add Filter".

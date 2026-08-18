@@ -115,6 +115,10 @@ pub struct Theme {
     pub selection_range_bg: Color32,
     /// Filter lane palette for the active UI mode (light/dark), cycled by index.
     pub filter_colors: [Color32; 20],
+    /// Background wash for search matches in the log view.
+    pub search_highlight_bg: Color32,
+    /// Background wash for keyword (double-click) matches in the log view.
+    pub keyword_highlight_bg: Color32,
 }
 
 impl Theme {
@@ -149,6 +153,8 @@ impl Theme {
             analysis_text:         Color32::from_rgb(255, 140, 140),
             selection_range_bg:    Color32::from_rgba_unmultiplied(137, 180, 250, 40),
             filter_colors:         FILTER_COLORS_DARK,
+            search_highlight_bg:   Color32::from_rgba_unmultiplied(255, 180, 50, 90),
+            keyword_highlight_bg:  Color32::from_rgba_unmultiplied(35, 210, 220, 70),
         }
     }
 
@@ -183,6 +189,8 @@ impl Theme {
             analysis_text:         Color32::from_rgb(200, 50, 50),
             selection_range_bg:    Color32::from_rgba_unmultiplied(30, 102, 245, 30),
             filter_colors:         FILTER_COLORS_LIGHT,
+            search_highlight_bg:   Color32::from_rgba_unmultiplied(255, 200, 0, 110),
+            keyword_highlight_bg:  Color32::from_rgba_unmultiplied(15, 155, 175, 60),
         }
     }
 }

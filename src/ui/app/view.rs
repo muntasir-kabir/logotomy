@@ -145,7 +145,10 @@ impl LogotomyApp {
         // Push any GUI-originated filter-set changes into MCP state.
         self.sync_mcp_filters();
         let mut any_search = false;
-        for tab in &mut self.tabs { if tab.poll_search() { any_search = true; } }
+        for tab in &mut self.tabs {
+            if tab.poll_search() { any_search = true; }
+            if tab.poll_find()   { any_search = true; }
+        }
         if any_search || !self.loaders.is_empty() {
             ui.ctx().request_repaint_after(Duration::from_millis(60));
         }

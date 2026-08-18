@@ -33,9 +33,11 @@ Rust, eframe/egui (GUI), memmap2 (mmap I/O), memchr (SIMD line indexing), aho-co
 | Drain template mining (native Rust) | `src/core/drain.rs` |
 | Pre-mining masking (IPs, UUIDs, paths, JSON, numbers → semantic placeholders) | `src/core/masking.rs` |
 | Aho-Corasick multi-filter search | `src/core/search.rs` |
+| Single-pattern find box / keyword highlight (`find_lines`, `build_find_automaton`) | `src/core/search.rs` |
 | Persistent settings (JSON, ~/.logotomy/settings.json) | `src/core/settings.rs` |
 | Timeline histogram + filter lanes (zoom/pan, full-height, 1px density lines, eye-toggle + trash per lane, "Everything Else" lane, smart axis labels with duration, minimap, fixed-height always-visible panel, hover tooltip with full filter text + match count, bottom "Show/Hide all filters" + "Clear all filters" toolbar) | `src/core/timeline.rs`, `src/ui/timeline/` |
 | Virtualized multi-tab log view | `src/ui/log_view/` |
+| Log view find state + keyword highlight (`find_input`, `find_query`, `find_matches`, `find_pos`, `find_rx`, `keyword_highlight`, `keyword_automaton`) | `src/ui/app/model.rs` |
 | Embedded Space Mono log font — baked into the binary (`include_bytes!`), registered under a dedicated egui family so only log text uses it (SIL OFL 1.1, `OFL.txt` in `src/ui/fonts/Space_Mono/`) | `src/ui/fonts/`, `src/ui/log_view/`, `src/ui/pin_viewer/` |
 | Filter bookmarks (compact toolbar add + chip row; delete confirmations with optional "do not ask again") | `src/ui/filters.rs` |
 | Pinned lines + analyses bottom panel (per-card Edit reopens the pin window) | `src/ui/bottom_panel.rs` |

@@ -1,3 +1,12 @@
+# Log view: header search box + double-click keyword highlight
+
+The log view now has two lightweight, ephemeral navigation aids that sit inside the log view and never touch the filter set:
+
+1. **Header search** — type + Enter runs a background scan, shows `n / total`, and `▲`/`▼` step through matches. Left/Up and Right/Down step matches from the keyboard.
+2. **Double-click keyword highlight** — double-clicking a word in a log line paints every occurrence of that word in the visible rows. Esc, or a single click on a row, clears it. The keyword is also pre-filled into the search box so Enter promotes it to a full search.
+
+Search is case-insensitive and scans only currently-visible lines when lane filters are active.
+
 # Fix: CI release smoke test now builds the binary first
 
 The Release workflow (`.github/workflows/release.yml`) failed in the "Smoke-test built binary" step on Windows/macOS because `cargo-packager` does not build the binary itself (and `cargo test` only leaves test-harness artifacts), so `target/<triple>/release/logotomy` never existed. Added a `cargo build --release --target ${{ matrix.target }}` step before the smoke test (which also guarantees the binary exists for the packager step).

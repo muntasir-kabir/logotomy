@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::ui::app::model::LogTab;
 use crate::ui::icons::{self, Icon};
-use crate::ui::log_view::line_job;
+use crate::ui::log_view::{Highlights, line_job};
 use crate::ui::theme::Theme;
 use logotomy::core::timeline::TimelineDomain;
 use logotomy::core::time::format_ms;
@@ -152,8 +152,7 @@ fn pin_line(ui: &mut egui::Ui, tab: &LogTab, theme: &Theme, small_font: &egui::F
         );
         let job = line_job(
             &tab.doc,
-            &tab.filters,
-            tab.highlighter.as_deref(),
+            &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()),
             ln,
             false,
             small_font.clone(),

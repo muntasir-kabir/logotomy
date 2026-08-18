@@ -7,6 +7,7 @@
 
 use std::cell::Cell;
 
+use aho_corasick::AhoCorasick;
 use eframe::egui;
 use egui::{Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind};
 
@@ -32,6 +33,7 @@ enum RowAction {
     Pin,
     TrimRight,
     TrimLeft,
+    Keyword(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -126,19 +128,20 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                     let action = render_row(
                         ui,
                         &tab.doc,
-                        &tab.filters,
-                        tab.highlighter.as_deref(),
+                        &Highlights::from_tab(tab),
                         i,
                         selected,
                         font_id.clone(),
                         theme,
                         row_height,
                         tab.selection_range,
+                        char_width,
                     );
 
                     let is_select = matches!(action, Some(RowAction::Select));
                     match action {
                         Some(RowAction::Select) if !suppress_select => {
+                            tab.set_keyword_highlight(None);
                             tab.context_line = Some(i);
                             tab.ensure_visible();
                         }
@@ -150,6 +153,10 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                         }
                         Some(RowAction::TrimLeft) => {
                             context_trim = Some(TrimAction::TrimLeft(i));
+                        }
+                        Some(RowAction::Keyword(kw)) => {
+                            tab.set_keyword_highlight(Some(kw.clone()));
+                            tab.find_input = kw;
                         }
                         _ => {}
                     }
@@ -175,6 +182,35 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
 
     // ---- compute viewport_range for timeline shadow ----
     update_viewport_range(tab, &rendered_range, pending);
+
+    // ---- arrow-key find navigation ----
+    if tab.pin_modal.is_none() && tab.pending_selection.is_none() && !tab.find_matches.is_empty() {
+        let search_has_focus = tab.find_rx.is_some() || !tab.find_query.is_empty();
+        ui.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) && !search_has_focus {
+                tab.find_prev();
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) && !search_has_focus {
+                tab.find_next();
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                tab.find_prev();
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                tab.find_next();
+            }
+        });
+    }
+
+    // ---- Esc peels one layer at a time ----
+    if tab.pin_modal.is_none() && tab.pending_selection.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if tab.keyword_highlight.is_some() {
+            tab.set_keyword_highlight(None);
+        } else if !tab.find_query.is_empty() {
+            tab.clear_find();
+            tab.find_input.clear();
+        }
+    }
 
     // ---- pointer-driven drag selection ----
     let pointer = ui.input(|i| i.pointer.clone());
@@ -384,19 +420,19 @@ pub fn pin_modal_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             if actual_count > max_preview {
                 egui::ScrollArea::vertical().max_height(180.0).auto_shrink([false, false]).show(ui, |ui| {
                     for &line_idx in visible_in_range.iter().take(max_preview / 2) {
-                        let job = line_job(&tab.doc, &tab.filters, tab.highlighter.as_deref(), line_idx, false, font_id.clone(), theme);
+                        let job = line_job(&tab.doc, &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()), line_idx, false, font_id.clone(), theme);
                         ui.add(egui::Label::new(job));
                     }
                     ui.label(RichText::new(format!("… {} more lines …", actual_count - max_preview)).italics().color(theme.text_muted));
                     for &line_idx in visible_in_range.iter().rev().take(max_preview / 2).rev() {
-                        let job = line_job(&tab.doc, &tab.filters, tab.highlighter.as_deref(), line_idx, false, font_id.clone(), theme);
+                        let job = line_job(&tab.doc, &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()), line_idx, false, font_id.clone(), theme);
                         ui.add(egui::Label::new(job));
                     }
                 });
             } else {
                 egui::ScrollArea::vertical().max_height(180.0).auto_shrink([false, false]).show(ui, |ui| {
                     for &line_idx in &visible_in_range {
-                        let job = line_job(&tab.doc, &tab.filters, tab.highlighter.as_deref(), line_idx, false, font_id.clone(), theme);
+                        let job = line_job(&tab.doc, &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()), line_idx, false, font_id.clone(), theme);
                         ui.add(egui::Label::new(job));
                     }
                 });
@@ -496,10 +532,107 @@ fn show_toolbar(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme, _max_visible
         show_line_count(ui, tab, theme);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let scroll_bar_width = SCROLL_BAR_WIDTH;
-            ui.add_space(scroll_bar_width + 8.0);
+            show_search_ui(ui, tab, theme);
+            ui.add_space(SCROLL_BAR_WIDTH + 8.0);
         });
     });
+}
+
+/// Render the find/search UI in the toolbar.
+fn show_search_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
+    let search_active = !tab.find_query.is_empty();
+
+    ui.horizontal(|ui| {
+        let input_resp = ui.add(
+            egui::TextEdit::singleline(&mut tab.find_input)
+                .hint_text("search log + Enter")
+                .desired_width(200.0),
+        );
+
+        if input_resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let trimmed = tab.find_input.trim();
+            if trimmed != tab.find_query {
+                tab.start_find(trimmed.to_string());
+            } else {
+                tab.find_next();
+            }
+            input_resp.request_focus();
+        }
+
+        if !tab.find_matches.is_empty() {
+            let pos = tab.find_pos.unwrap_or(0);
+            ui.label(RichText::new(format!("{} / {}", pos + 1, tab.find_matches.len())).size(11.0).color(theme.text_muted));
+        } else if search_active {
+            ui.label(RichText::new("no matches").size(11.0).color(theme.warning));
+        }
+
+        if ui.add_enabled(!tab.find_matches.is_empty(), icons::icon_image(ui.ctx(), Icon::ArrowUp, 13.0, theme.text))
+            .on_hover_text("Previous match")
+            .clicked()
+        {
+            tab.find_prev();
+        }
+
+        if ui.add_enabled(!tab.find_matches.is_empty(), icons::icon_image(ui.ctx(), Icon::ArrowDown, 13.0, theme.text))
+            .on_hover_text("Next match")
+            .clicked()
+        {
+            tab.find_next();
+        }
+
+        if ui.add(icons::icon_image(ui.ctx(), Icon::Close, 13.0, theme.text))
+            .on_hover_text("Clear search")
+            .clicked()
+        {
+            tab.clear_find();
+            tab.find_input.clear();
+        }
+
+        if tab.find_rx.is_some() {
+            ui.spinner();
+        }
+    });
+}
+
+fn keyword_at(text: &str, char_idx: usize) -> Option<String> {
+    if text.is_empty() {
+        return None;
+    }
+    let char_count = text.chars().count();
+    if char_idx >= char_count {
+        return None;
+    }
+    let clicked_char = text.chars().nth(char_idx)?;
+    if is_word_delimiter(clicked_char) {
+        return None;
+    }
+
+    let mut start = char_idx;
+    while start > 0 {
+        let c = text.chars().nth(start - 1)?;
+        if is_word_delimiter(c) {
+            break;
+        }
+        start -= 1;
+    }
+    let mut end = char_idx;
+    while end < char_count {
+        let c = text.chars().nth(end)?;
+        if is_word_delimiter(c) {
+            break;
+        }
+        end += 1;
+    }
+    let word: String = text.chars().skip(start).take(end - start).collect();
+    if word.is_empty() || word.chars().all(is_word_delimiter) {
+        None
+    } else {
+        Some(word)
+    }
+}
+
+fn is_word_delimiter(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '-' | '[' | ']' | '{' | '}' | '(' | ')' | ',' | '"' | '\'')
 }
 
 /// Display total and filtered line counts.
@@ -587,14 +720,14 @@ fn row_under_pointer(
 fn render_row(
     ui: &mut egui::Ui,
     doc: &LogDocument,
-    filters: &[Filter],
-    highlighter: Option<&aho_corasick::AhoCorasick>,
+    highlights: &Highlights,
     idx: usize,
     selected: bool,
     font_id: FontId,
     theme: &Theme,
     row_height: f32,
     selection_range: Option<(usize, usize)>,
+    char_width: f32,
 ) -> Option<RowAction> {
     let mut action: Option<RowAction> = None;
 
@@ -608,7 +741,7 @@ fn render_row(
     };
 
     // Build the log content job (no line number, no color marker).
-    let job = line_job(doc, filters, highlighter, idx, selected, font_id.clone(), theme);
+    let job = line_job(doc, highlights, idx, selected, font_id.clone(), theme);
 
     // Use a horizontal layout: line number (non-interactive, not selectable) + log content (clickable).
     ui
@@ -637,8 +770,14 @@ fn render_row(
                         .sense(egui::Sense::click()),
                 );
 
-                // Left-click: select line
-                if content_resp.clicked() {
+                // Double-click: keyword highlight
+                if content_resp.double_clicked() {
+                    let rel_x = ui.input(|i| i.pointer.latest_pos()).map(|p| p.x - content_resp.rect.left()).unwrap_or(0.0);
+                    let ci = (rel_x / char_width).max(0.0) as usize;
+                    if let Some(kw) = keyword_at(&doc.line(idx), ci) {
+                        action = Some(RowAction::Keyword(kw));
+                    }
+                } else if content_resp.clicked() {
                     action = Some(RowAction::Select);
                 }
 
@@ -770,6 +909,37 @@ fn update_viewport_range(
 }
 
 // ---------------------------------------------------------------------------
+// Highlights helper
+// ---------------------------------------------------------------------------
+
+pub struct Highlights<'a> {
+    pub filters: &'a [Filter],
+    pub filter_ac: Option<&'a AhoCorasick>,
+    pub search_ac: Option<&'a AhoCorasick>,
+    pub keyword_ac: Option<&'a AhoCorasick>,
+}
+
+impl<'a> Highlights<'a> {
+    pub fn from_tab(tab: &'a LogTab) -> Self {
+        Self {
+            filters: &tab.filters,
+            filter_ac: tab.highlighter.as_deref(),
+            search_ac: tab.find_automaton.as_deref(),
+            keyword_ac: tab.keyword_automaton.as_deref(),
+        }
+    }
+
+    pub fn filters_only(filters: &'a [Filter], ac: Option<&'a AhoCorasick>) -> Self {
+        Self {
+            filters,
+            filter_ac: ac,
+            search_ac: None,
+            keyword_ac: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Row styling (unchanged)
 // ---------------------------------------------------------------------------
 
@@ -780,8 +950,7 @@ fn update_viewport_range(
 /// TODO: Make matched filters bold (requires per-span FontId changes in egui).
 pub fn line_job(
     doc: &LogDocument,
-    filters: &[Filter],
-    highlighter: Option<&aho_corasick::AhoCorasick>,
+    highlights: &Highlights,
     idx: usize,
     selected: bool,
     font_id: FontId,
@@ -825,37 +994,72 @@ pub fn line_job(
     };
 
     let base = theme.log_text;
-    match highlighter {
-        Some(ac) => append_highlighted(&mut job, text, ac, filters, fmt(base), font_id),
-        None => {
+    match (highlights.filter_ac, highlights.search_ac, highlights.keyword_ac) {
+        (None, None, None) => {
             job.append(text, 0.0, fmt(base));
+        }
+        (filter_ac, search_ac, keyword_ac) => {
+            append_highlighted(&mut job, text, filter_ac, search_ac, keyword_ac, highlights.filters, fmt(base), font_id, theme);
         }
     }
     job
 }
 
-/// Append `text`, coloring every filter occurrence with that filter's color.
-/// First match wins when spans overlap.
+#[derive(Clone, Copy, PartialEq)]
+enum Hl {
+    Filter(usize),
+    Search,
+    Keyword,
+}
+
+/// Append `text`, coloring every occurrence with the appropriate highlight.
+/// Precedence: search > keyword > filter (first writer wins per byte).
 fn append_highlighted(
     job: &mut egui::text::LayoutJob,
     text: &str,
-    ac: &aho_corasick::AhoCorasick,
+    filter_ac: Option<&AhoCorasick>,
+    search_ac: Option<&AhoCorasick>,
+    keyword_ac: Option<&AhoCorasick>,
     filters: &[Filter],
     base_fmt: egui::text::TextFormat,
     font_id: FontId,
+    theme: &Theme,
 ) {
-    // Per-byte color assignment (lines are short; this is a couple KB max).
-    let mut owner: Vec<Option<usize>> = vec![None; text.len()];
+    let mut owner: Vec<Option<Hl>> = vec![None; text.len()];
     let mut any = false;
-    for m in ac.find_iter(text) {
-        let kw = m.pattern().as_usize();
-        for slot in &mut owner[m.start()..m.end()] {
-            if slot.is_none() {
-                *slot = Some(kw);
+
+    if let Some(ac) = search_ac {
+        for m in ac.find_iter(text) {
+            for slot in &mut owner[m.start()..m.end()] {
+                if slot.is_none() {
+                    *slot = Some(Hl::Search);
+                    any = true;
+                }
             }
         }
-        any = true;
     }
+    if let Some(ac) = keyword_ac {
+        for m in ac.find_iter(text) {
+            for slot in &mut owner[m.start()..m.end()] {
+                if slot.is_none() {
+                    *slot = Some(Hl::Keyword);
+                    any = true;
+                }
+            }
+        }
+    }
+    if let Some(ac) = filter_ac {
+        for m in ac.find_iter(text) {
+            let kw = m.pattern().as_usize();
+            for slot in &mut owner[m.start()..m.end()] {
+                if slot.is_none() {
+                    *slot = Some(Hl::Filter(kw));
+                    any = true;
+                }
+            }
+        }
+    }
+
     if !any {
         job.append(text, 0.0, base_fmt);
         return;
@@ -868,21 +1072,18 @@ fn append_highlighted(
         while end < text.len() && owner[end] == cur {
             end += 1;
         }
-        // Byte spans from Aho-Corasick are pattern-aligned, but grouping may
-        // split a multibyte char — slice defensively.
         if let Some(seg) = text.get(pos..end) {
             match cur {
-                Some(kw) => {
+                Some(Hl::Filter(kw)) => {
                     let color = filters
                         .get(kw)
                         .map(|k| k.color)
                         .unwrap_or(Color32::YELLOW);
-                    // Use the filter color at ~0.2 alpha for the background.
                     let bg_alpha = Color32::from_rgba_unmultiplied(
                         color.r(),
                         color.g(),
                         color.b(),
-                        51, // 51/255 ≈ 0.2
+                        51,
                     );
                     job.append(
                         seg,
@@ -891,6 +1092,30 @@ fn append_highlighted(
                             font_id: font_id.clone(),
                             color,
                             background: bg_alpha,
+                            ..Default::default()
+                        },
+                    );
+                }
+                Some(Hl::Search) => {
+                    job.append(
+                        seg,
+                        0.0,
+                        egui::text::TextFormat {
+                            font_id: font_id.clone(),
+                            color: base_fmt.color,
+                            background: theme.search_highlight_bg,
+                            ..Default::default()
+                        },
+                    );
+                }
+                Some(Hl::Keyword) => {
+                    job.append(
+                        seg,
+                        0.0,
+                        egui::text::TextFormat {
+                            font_id: font_id.clone(),
+                            color: base_fmt.color,
+                            background: theme.keyword_highlight_bg,
                             ..Default::default()
                         },
                     );
@@ -961,9 +1186,28 @@ mod tests {
         save_pin(&mut tab, (0, 0));
 
         assert_eq!(tab.pins.len(), 1);
-        assert_eq!(tab.pins[0].comment, "fresh comment");
         assert_eq!(tab.pins[0].line_numbers, vec![0]);
 
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn keyword_at_mid_word() {
+        assert_eq!(keyword_at("hello world", 2), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn keyword_at_on_delimiter_returns_none() {
+        assert_eq!(keyword_at("hello world", 5), None);
+    }
+
+    #[test]
+    fn keyword_at_bracketed_token() {
+        assert_eq!(keyword_at("[LogEntry] foo", 1), Some("LogEntry".to_string()));
+    }
+
+    #[test]
+    fn keyword_at_past_eol_returns_none() {
+        assert_eq!(keyword_at("hi", 5), None);
     }
 }

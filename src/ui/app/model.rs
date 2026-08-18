@@ -115,6 +115,15 @@ pub struct LogTab {
     pub preserve_anchor: Option<usize>,
     pub applied_filter: Option<String>,
 
+    pub find_input: String,
+    pub find_query: String,
+    pub find_matches: Vec<usize>,
+    pub find_pos: Option<usize>,
+    pub find_automaton: Option<Arc<AhoCorasick>>,
+    pub find_rx: Option<(Receiver<Vec<usize>>, Arc<AtomicBool>)>,
+    pub keyword_highlight: Option<String>,
+    pub keyword_automaton: Option<Arc<AhoCorasick>>,
+
     pub dock_state: DockState<ViewTab>,
     pub detached_views: HashSet<ViewTab>,
     pub detached_locations: HashMap<ViewTab, egui_dock::TabPath>,
@@ -175,6 +184,14 @@ impl LogTab {
             viewport_range: None,
             preserve_anchor: None,
             applied_filter: None,
+            find_input: String::new(),
+            find_query: String::new(),
+            find_matches: Vec::new(),
+            find_pos: None,
+            find_automaton: None,
+            find_rx: None,
+            keyword_highlight: None,
+            keyword_automaton: None,
             dock_state,
             detached_views: HashSet::new(),
             detached_locations: HashMap::new(),
@@ -262,6 +279,10 @@ impl LogTab {
                     Some(_) | None => self.preserve_anchor = None,
                 }
             }
+        }
+
+        if !self.find_query.is_empty() {
+            self.start_find(self.find_query.clone());
         }
     }
 
@@ -503,6 +524,8 @@ impl LogTab {
         self.drag_start_line = None;
         self.drag_current_line = None;
         self.drag_start_pos = None;
+        self.clear_find();
+        self.find_input.clear();
 
         // Rebuild filters + timeline for the new document.
         self.rescan_filters();
@@ -540,6 +563,8 @@ impl LogTab {
         self.drag_start_line = None;
         self.drag_current_line = None;
         self.drag_start_pos = None;
+        self.clear_find();
+        self.find_input.clear();
 
         // Rebuild filters + timeline for the full document.
         self.rescan_filters();
@@ -562,6 +587,103 @@ impl LogTab {
                 false
             }
         }
+    }
+
+    /// Start a background find scan for `query`. Empty query clears find state.
+    pub fn start_find(&mut self, query: String) {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            self.clear_find();
+            self.find_input.clear();
+            return;
+        }
+        if let Some((_, cancel)) = &self.find_rx {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.find_query = trimmed.to_string();
+        self.find_automaton = search::build_find_automaton(trimmed, true).map(Arc::new);
+        self.find_matches.clear();
+        self.find_pos = None;
+
+        let doc = Arc::clone(&self.doc);
+        let subset = self.visible_lines.clone();
+        let needle = trimmed.to_string();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            let _ = tx.send(search::find_lines(&doc, subset.as_deref(), &needle, true, &cancel_worker));
+        });
+        self.find_rx = Some((rx, cancel));
+    }
+
+    /// Poll the background find scan. Returns `true` while in flight.
+    pub fn poll_find(&mut self) -> bool {
+        let Some((rx, _)) = &self.find_rx else { return false; };
+        match rx.try_recv() {
+            Ok(matches) => {
+                self.find_matches = matches;
+                self.find_rx = None;
+                if self.find_matches.is_empty() {
+                    self.find_pos = None;
+                } else {
+                    self.find_pos = Some(0);
+                    self.goto_find_match(0);
+                }
+                false
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => true,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.find_rx = None;
+                false
+            }
+        }
+    }
+
+    /// Step to the next match, wrapping around.
+    pub fn find_next(&mut self) {
+        if self.find_matches.is_empty() { return; }
+        let pos = self.find_pos.unwrap_or(0);
+        let next = (pos + 1) % self.find_matches.len();
+        self.goto_find_match(next);
+    }
+
+    /// Step to the previous match, wrapping around.
+    pub fn find_prev(&mut self) {
+        if self.find_matches.is_empty() { return; }
+        let pos = self.find_pos.unwrap_or(0);
+        let prev = if pos == 0 { self.find_matches.len() - 1 } else { pos - 1 };
+        self.goto_find_match(prev);
+    }
+
+    /// Jump to match index `i` (clamped to match list length).
+    fn goto_find_match(&mut self, i: usize) {
+        let line = self.find_matches[i.min(self.find_matches.len().saturating_sub(1))];
+        self.find_pos = Some(i.min(self.find_matches.len().saturating_sub(1)));
+        self.context_line = Some(line);
+        self.pending_scroll = Some(line);
+        self.ensure_visible();
+    }
+
+    /// Clear in-flight find and reset all find state.
+    pub fn clear_find(&mut self) {
+        if let Some((_, cancel)) = &self.find_rx {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.find_rx = None;
+        self.find_query.clear();
+        self.find_matches.clear();
+        self.find_pos = None;
+        self.find_automaton = None;
+    }
+
+    /// Set the keyword highlight (double-click). Case-sensitive.
+    pub fn set_keyword_highlight(&mut self, kw: Option<String>) {
+        self.keyword_highlight = kw.clone();
+        self.keyword_automaton = kw
+            .map(|k| search::build_find_automaton(&k, false))
+            .flatten()
+            .map(Arc::new);
     }
 }
 
@@ -991,6 +1113,9 @@ impl LogotomyApp {
         if idx >= self.tabs.len() { return; }
         info!("closing tab {} ({})", idx, self.tabs[idx].doc.file_name);
         if let Some((_, cancel)) = &self.tabs[idx].search_rx {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some((_, cancel)) = &self.tabs[idx].find_rx {
             cancel.store(true, Ordering::Relaxed);
         }
 
@@ -1634,6 +1759,81 @@ mod tests {
                        tab.selection_range, tab.pending_selection].iter().flatten() {
             assert!(*a < before && *b < before, "range ({a},{b}) not clamped to < {before}");
         }
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn find_next_and_prev_wrap_around_and_noop_on_empty() {
+        let path = write_temp(
+            "2026-07-19T10:00:00.000Z err a\n\
+             2026-07-19T10:00:01.000Z err b\n\
+             2026-07-19T10:00:02.000Z err c\n",
+        );
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+
+        // No matches: no-op.
+        tab.find_matches = vec![];
+        tab.find_pos = None;
+        tab.find_next();
+        tab.find_prev();
+        assert!(tab.find_pos.is_none());
+
+        // Two matches: wrap around.
+        tab.find_matches = vec![0, 2];
+        tab.find_pos = Some(0);
+        tab.find_next();
+        assert_eq!(tab.find_pos, Some(1));
+        tab.find_next();
+        assert_eq!(tab.find_pos, Some(0));
+        tab.find_prev();
+        assert_eq!(tab.find_pos, Some(1));
+        tab.find_prev();
+        assert_eq!(tab.find_pos, Some(0));
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn set_keyword_highlight_builds_and_clears_automaton() {
+        let path = write_temp("2026-07-19T10:00:00.000Z INFO hello\n");
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+
+        tab.set_keyword_highlight(Some("hello".into()));
+        assert_eq!(tab.keyword_highlight, Some("hello".into()));
+        assert!(tab.keyword_automaton.is_some());
+
+        tab.set_keyword_highlight(None);
+        assert!(tab.keyword_highlight.is_none());
+        assert!(tab.keyword_automaton.is_none());
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn start_find_polls_to_completion_and_respects_subset() {
+        let path = write_temp(
+            "2026-07-19T10:00:00.000Z err a\n\
+             2026-07-19T10:00:01.000Z err b\n\
+             2026-07-19T10:00:02.000Z err c\n\
+             2026-07-19T10:00:03.000Z ok  d\n",
+        );
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+        tab.visible_lines = Some(vec![0, 2, 3]);
+
+        tab.start_find("err".to_string());
+        for _ in 0..200 {
+            if !tab.poll_find() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(tab.find_matches, vec![0, 2]);
+        assert_eq!(tab.find_pos, Some(0));
+        assert_eq!(tab.context_line, Some(0));
+
         std::fs::remove_file(path).ok();
     }
 }

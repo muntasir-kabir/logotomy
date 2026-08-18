@@ -56,6 +56,66 @@ pub fn scan_document(
     out
 }
 
+/// Build a single-pattern automaton for the log view's find box / keyword
+/// highlight. Unlike `build_automaton` (filter set, always case-sensitive) this
+/// can fold ASCII case, which is what a find box is expected to do.
+/// Returns `None` for an empty/whitespace-only needle.
+pub fn build_find_automaton(needle: &str, case_insensitive: bool) -> Option<AhoCorasick> {
+    let pat = needle.trim();
+    if pat.is_empty() {
+        return None;
+    }
+    AhoCorasick::builder()
+        .ascii_case_insensitive(case_insensitive)
+        .build([pat])
+        .ok()
+}
+
+/// Scan for a single needle, returning the sorted line indices that contain it.
+/// `subset` restricts the scan to those (already sorted, trim-relative) lines —
+/// pass `None` to scan the whole document. Indices are trim-relative, matching
+/// `scan_document`. `cancel` is checked periodically; bailing early returns the
+/// partial result gathered so far.
+pub fn find_lines(
+    doc: &LogDocument,
+    subset: Option<&[usize]>,
+    needle: &str,
+    case_insensitive: bool,
+    cancel: &AtomicBool,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    let Some(ac) = build_find_automaton(needle, case_insensitive) else {
+        return out;
+    };
+    let n = doc.total_lines();
+    match subset {
+        Some(lines) => {
+            for (step, &i) in lines.iter().enumerate() {
+                if step % 16_384 == 0 && cancel.load(Ordering::Relaxed) {
+                    return out;
+                }
+                if i >= n {
+                    continue;
+                }
+                if ac.is_match(doc.line(i).as_ref()) {
+                    out.push(i);
+                }
+            }
+        }
+        None => {
+            for i in 0..n {
+                if i % 16_384 == 0 && cancel.load(Ordering::Relaxed) {
+                    return out;
+                }
+                if ac.is_match(doc.line(i).as_ref()) {
+                    out.push(i);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Count matches whose (forward-filled) timestamp falls inside [after, before].
 pub fn count_in_window(
     doc: &LogDocument,
@@ -170,4 +230,59 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
+    #[test]
+    fn find_lines_folds_case_when_asked() {
+        let (doc, path) = doc_with(
+            "2026-07-19T10:00:00.000Z ERROR disk full\n\
+             2026-07-19T10:00:01.000Z info nothing to see\n\
+             2026-07-19T10:00:02.000Z WARN error recovering\n",
+        );
+        let cancel = AtomicBool::new(false);
+        // Case-insensitive: both the upper- and lower-case spellings match.
+        assert_eq!(find_lines(&doc, None, "error", true, &cancel), vec![0, 2]);
+        // Case-sensitive: only the exact spelling.
+        assert_eq!(find_lines(&doc, None, "error", false, &cancel), vec![2]);
+        assert_eq!(find_lines(&doc, None, "ERROR", false, &cancel), vec![0]);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn find_lines_restricts_to_the_subset() {
+        let (doc, path) = doc_with(
+            "2026-07-19T10:00:00.000Z err a\n\
+             2026-07-19T10:00:01.000Z err b\n\
+             2026-07-19T10:00:02.000Z err c\n\
+             2026-07-19T10:00:03.000Z ok  d\n",
+        );
+        let cancel = AtomicBool::new(false);
+        assert_eq!(find_lines(&doc, None, "err", true, &cancel), vec![0, 1, 2]);
+        // Line 1 is filtered out of the view, so it must not be reported.
+        let subset = [0usize, 2, 3];
+        assert_eq!(find_lines(&doc, Some(&subset), "err", true, &cancel), vec![0, 2]);
+        // Out-of-range subset entries are skipped, not panicked on.
+        let stale = [0usize, 999];
+        assert_eq!(find_lines(&doc, Some(&stale), "err", true, &cancel), vec![0]);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn find_lines_returns_empty_for_a_blank_needle() {
+        let (doc, path) = doc_with("2026-07-19T10:00:00.000Z err a\n");
+        let cancel = AtomicBool::new(false);
+        assert!(find_lines(&doc, None, "", true, &cancel).is_empty());
+        assert!(find_lines(&doc, None, "   ", true, &cancel).is_empty());
+        assert!(build_find_automaton("", true).is_none());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn find_lines_bails_out_when_cancelled() {
+        let (doc, path) = doc_with(
+            "2026-07-19T10:00:00.000Z err a\n\
+             2026-07-19T10:00:01.000Z err b\n",
+        );
+        let cancel = AtomicBool::new(true);
+        assert!(find_lines(&doc, None, "err", true, &cancel).is_empty());
+        std::fs::remove_file(path).ok();
+    }
 }
