@@ -1,5 +1,7 @@
 # Change: MCP initialization instructions distinguish GUI and headless workflows
 
+Bumped the application and installer metadata to version 0.1.1 for the release tag.
+
 Made release packaging safer and more reproducible by using the native Intel macOS runner, validating release tags against Cargo and packager versions, pinning cargo-packager, and publishing platform-specific first-run instructions.
 
 Captured the benchmark output from every release target and publish it as one combined `benchmark-results.txt` file alongside the installers and checksums.
