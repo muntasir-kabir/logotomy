@@ -43,7 +43,10 @@ impl LogFormat for Json {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             // Not valid JSON → treat the whole line as free text.
             let masked = ctx.masker.mask_with_header(line, &[], ctx.mask_cache);
-            return Normalized { ts: None, content: masked };
+            return Normalized {
+                ts: None,
+                content: masked,
+            };
         };
         let ts = extract_ts(&value, line);
         let content = build_content(&value, line, ctx);
@@ -52,7 +55,9 @@ impl LogFormat for Json {
 }
 
 fn extract_ts(value: &Value, line: &str) -> Option<(i64, Range<usize>)> {
-    let Value::Object(obj) = value else { return None };
+    let Value::Object(obj) = value else {
+        return None;
+    };
     for key in TIME_KEYS {
         if let Some(val) = obj.get(*key) {
             match val {
@@ -98,11 +103,7 @@ fn number_to_ms(n: &serde_json::Number) -> Option<i64> {
     None
 }
 
-fn build_content<'a>(
-    value: &Value,
-    line: &'a str,
-    ctx: &mut FormatContext<'_>,
-) -> Cow<'a, str> {
+fn build_content<'a>(value: &Value, line: &'a str, ctx: &mut FormatContext<'_>) -> Cow<'a, str> {
     let Value::Object(obj) = value else {
         return ctx.masker.mask_with_header(line, &[], ctx.mask_cache);
     };
@@ -144,7 +145,6 @@ fn value_class(val: &Value) -> &'static str {
         Value::String(_) => "<STR>",
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -8,9 +8,8 @@ use regex::Regex;
 
 use super::{window, TimeFormat};
 
-static RE_APACHE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}\s[+-]\d{4}").unwrap()
-});
+static RE_APACHE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}\s[+-]\d{4}").unwrap());
 
 /// Apache CLF `10/Oct/2024:13:55:36 -0700` timestamps.
 pub struct Apache;

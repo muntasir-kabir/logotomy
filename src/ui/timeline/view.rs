@@ -7,6 +7,8 @@
 //! Click any diamond → context panel shows that line ± radius with line
 //! numbers and original log text.
 
+use std::time::Duration;
+
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2};
 
@@ -15,6 +17,7 @@ use logotomy::core::time::format_ms;
 use logotomy::core::timeline::TimelineDomain;
 
 use crate::ui::app::model::LogTab;
+use crate::ui::filters as filter_strip;
 use crate::ui::icons::{self, Icon};
 use crate::ui::theme::Theme;
 
@@ -25,9 +28,6 @@ const MAX_LANES: usize = 20;
 /// fall back to bucket bars instead of individual diamonds.
 const DIAMOND_LIMIT: usize = 500;
 const MINIMAP_HEIGHT: f32 = 12.0;
-/// Height of the bottom filter-toolbar (toggle-all / clear-all buttons),
-/// shown only while filters exist. Plus a 4px gap above it.
-const BOTTOM_BAR_HEIGHT: f32 = 22.0;
 /// Zoom factor per scroll tick.
 const ZOOM_FACTOR: f64 = 1.18;
 /// Minimum zoom span as fraction of total span.
@@ -50,7 +50,12 @@ const HEADER_HEIGHT: f32 = 24.0;
 /// Used by the fixed top panel so the whole timeline (header, histogram,
 /// all filter lanes, axis labels, and minimap) is always fully visible.
 pub fn panel_height(tab: &LogTab) -> f32 {
-    let n_filter_lanes = tab.timeline.filter_buckets.len().min(MAX_LANES).min(tab.filters.len());
+    let n_filter_lanes = tab
+        .timeline
+        .filter_buckets
+        .len()
+        .min(MAX_LANES)
+        .min(tab.filters.len());
     let has_filters = !tab.filters.is_empty();
     let total_lanes = if has_filters { n_filter_lanes + 1 } else { 0 };
     let lanes_height = total_lanes as f32 * LANE_HEIGHT;
@@ -62,25 +67,67 @@ pub fn panel_height(tab: &LogTab) -> f32 {
         + 20.0 // axis labels row (tick labels + duration labels + hint text)
         + 8.0   // gap
         + MINIMAP_HEIGHT
-        + (if has_filters { 4.0 + BOTTOM_BAR_HEIGHT } else { 0.0 }) // bottom filter toolbar
 }
 
 pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("Timeline").strong());
+        ui.add_space(8.0);
+
+        if !tab.filters.is_empty() {
+            // Show / hide all filter lanes at once (Everything Else is never touched).
+            let all_active = tab.lane_active.iter().all(|&a| a);
+            let toggle_txt = if all_active {
+                "Hide all filters"
+            } else {
+                "Show all filters"
+            };
+            if ui
+                .button(toggle_txt)
+                .on_hover_text(if all_active {
+                    "Hide every filter lane at once (Everything Else stays as-is)"
+                } else {
+                    "Show every filter lane at once"
+                })
+                .clicked()
+            {
+                tab.toggle_all_lanes();
+            }
+
+            ui.add_space(6.0);
+            // Clear all filters (asks for confirmation in app/view.rs).
+            if ui
+                .button("Clear all filters")
+                .on_hover_text("Remove every filter behind a confirmation popup")
+                .clicked()
+            {
+                tab.pending_clear_filters = true;
+            }
+
+            ui.separator();
+        }
+
+        filter_strip::add_filter_ui(ui, tab, theme);
     });
     ui.add_space(2.0);
 
     // Everything Else lane only shown when filters exist.
-    let n_filter_lanes = tab.timeline.filter_buckets.len().min(MAX_LANES).min(tab.filters.len());
+    let n_filter_lanes = tab
+        .timeline
+        .filter_buckets
+        .len()
+        .min(MAX_LANES)
+        .min(tab.filters.len());
     let has_filters = !tab.filters.is_empty();
     let total_lanes = if has_filters { n_filter_lanes + 1 } else { 0 };
     let lanes_height = total_lanes as f32 * LANE_HEIGHT;
     let content_height = HISTO_HEIGHT.max(lanes_height);
 
     let height = panel_height(tab) - HEADER_HEIGHT;
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click_and_drag());
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click_and_drag(),
+    );
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -107,7 +154,11 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     let hist = Rect::from_min_max(
         Pos2::new(content_left, rect.min.y + 4.0),
         Pos2::new(
-            if has_filters { icon_left - 2.0 } else { icon_left },
+            if has_filters {
+                icon_left - 2.0
+            } else {
+                icon_left
+            },
             rect.min.y + 4.0 + content_height,
         ),
     );
@@ -162,9 +213,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     }
 
     // ---- lane row offset helper ----
-    let lane_y = |lane_index: usize| -> f32 {
-        hist.top() + 4.0 + lane_index as f32 * LANE_HEIGHT
-    };
+    let lane_y = |lane_index: usize| -> f32 { hist.top() + 4.0 + lane_index as f32 * LANE_HEIGHT };
 
     // Deferred toggle flags (to avoid mutable borrow conflict during iteration).
     let mut toggle_ee: Option<bool> = None;
@@ -181,32 +230,74 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
 
         // ---- Everything Else lane (first lane, index 0) ----
         let ee_y = lane_y(0);
-            // Marker + label in the left column
-            let ee_label_rect = Rect::from_min_max(
-                Pos2::new(label_col.left(), ee_y),
-                Pos2::new(label_col.right(), ee_y + LANE_HEIGHT),
+        // Whole-lane hover highlight (label column + lane content) so the
+        // whole row reads as one controllable unit while hovering.
+        let ee_lane_rect = Rect::from_min_max(
+            Pos2::new(label_col.left(), ee_y),
+            Pos2::new(hist.right(), ee_y + LANE_HEIGHT),
+        );
+        if ui.rect_contains_pointer(ee_lane_rect) {
+            let hb = theme.text;
+            painter.rect_filled(
+                ee_lane_rect,
+                egui::CornerRadius::same(3),
+                Color32::from_rgba_unmultiplied(hb.r(), hb.g(), hb.b(), 18),
             );
-            let ee_label_id = ui.id().with("ee_checkbox");
-            let ee_check_resp = ui.interact(ee_label_rect, ee_label_id, Sense::click());
-            if ee_check_resp.clicked() {
-                toggle_ee = Some(!tab.everything_else_active);
-            }
-            // Draw visible / invisible eye marker
-            let ee_marker_pos = Pos2::new(label_col.left() + EYE_LEFT_PAD + 6.0, ee_y + LANE_HEIGHT / 2.0);
-            let ee_marker_color = if tab.everything_else_active { theme.text } else { theme.text_muted };
-            let ee_icon = if tab.everything_else_active { Icon::Visible } else { Icon::Invisible };
-            icons::paint_icon(ui.ctx(), &painter, ee_icon, ee_marker_pos, 12.0, ee_marker_color);
-            // Label text, centered horizontally in the space after the eye icon
-            let ee_text_left = label_col.left() + EYE_LEFT_PAD + 12.0;
-            let ee_text_right = label_col.right() - LABEL_LANE_PAD;
-            let ee_label_pos = Pos2::new((ee_text_left + ee_text_right) / 2.0, ee_y + 7.0);
-            painter.text(
-                ee_label_pos,
-                egui::Align2::CENTER_CENTER,
-                "Everything Else",
-                egui::FontId::monospace(12.0),
-                if tab.everything_else_active { theme.text } else { theme.text_muted },
+            painter.rect_stroke(
+                ee_lane_rect,
+                egui::CornerRadius::same(3),
+                Stroke::new(
+                    1.0_f32,
+                    Color32::from_rgba_unmultiplied(hb.r(), hb.g(), hb.b(), 80),
+                ),
+                egui::StrokeKind::Middle,
             );
+            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+        }
+        // Marker + label in the left column
+        let ee_label_rect = Rect::from_min_max(
+            Pos2::new(label_col.left(), ee_y),
+            Pos2::new(label_col.right(), ee_y + LANE_HEIGHT),
+        );
+        let ee_label_id = ui.id().with("ee_checkbox");
+        let ee_check_resp = ui.interact(ee_label_rect, ee_label_id, Sense::click());
+        if ee_check_resp.clicked() {
+            toggle_ee = Some(!tab.everything_else_active);
+        }
+        // Native visible/invisible toggle button
+        let ee_marker_pos = Pos2::new(
+            label_col.left() + EYE_LEFT_PAD + 6.0,
+            ee_y + LANE_HEIGHT / 2.0,
+        );
+        let ee_marker_color = if tab.everything_else_active {
+            theme.text
+        } else {
+            theme.text_muted
+        };
+        let ee_icon = if tab.everything_else_active {
+            Icon::Visible
+        } else {
+            Icon::Invisible
+        };
+        let ee_eye_rect = Rect::from_center_size(ee_marker_pos, Vec2::new(16.0, 14.0));
+        if icons::icon_button_at(ui, ee_eye_rect, ee_icon, ee_marker_color).clicked() {
+            toggle_ee = Some(!tab.everything_else_active);
+        }
+        // Label text, centered horizontally in the space after the eye icon
+        let ee_text_left = label_col.left() + EYE_LEFT_PAD + 12.0;
+        let ee_text_right = label_col.right() - LABEL_LANE_PAD;
+        let ee_label_pos = Pos2::new((ee_text_left + ee_text_right) / 2.0, ee_y + 7.0);
+        painter.text(
+            ee_label_pos,
+            egui::Align2::CENTER_CENTER,
+            "Everything Else",
+            egui::FontId::monospace(12.0),
+            if tab.everything_else_active {
+                theme.text
+            } else {
+                theme.text_muted
+            },
+        );
         // No density line, no diamonds for Everything Else lane.
     }
 
@@ -217,11 +308,41 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             Pos2::new(rect.min.x + 4.0 + LABEL_WIDTH, hist.bottom()),
         );
 
-        for (ki, _kb) in tab.timeline.filter_buckets.iter().enumerate().take(n_filter_lanes) {
+        for (ki, _kb) in tab
+            .timeline
+            .filter_buckets
+            .iter()
+            .enumerate()
+            .take(n_filter_lanes)
+        {
             let li = ki + 1; // lane index (offset by 1 for Everything Else)
             let y = lane_y(li);
             let color = tab.filters[ki].color;
             let is_active = tab.lane_active.get(ki).copied().unwrap_or(true);
+
+            // Whole-lane hover highlight (label column + lane content) so the
+            // whole row reads as one controllable unit while hovering.
+            let lane_rect = Rect::from_min_max(
+                Pos2::new(label_col.left(), y),
+                Pos2::new(hist.right(), y + LANE_HEIGHT),
+            );
+            if ui.rect_contains_pointer(lane_rect) {
+                painter.rect_filled(
+                    lane_rect,
+                    egui::CornerRadius::same(3),
+                    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 20),
+                );
+                painter.rect_stroke(
+                    lane_rect,
+                    egui::CornerRadius::same(3),
+                    Stroke::new(
+                        1.0_f32,
+                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90),
+                    ),
+                    egui::StrokeKind::Middle,
+                );
+                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+            }
 
             // Marker + label in label area
             let kw_label_rect = Rect::from_min_max(
@@ -233,11 +354,19 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             if kw_check_resp.clicked() {
                 toggle_kw = Some((ki, !tab.lane_active[ki]));
             }
-            // Draw visible / invisible eye marker
-            let kw_marker_pos = Pos2::new(label_col.left() + EYE_LEFT_PAD + 6.0, y + LANE_HEIGHT / 2.0);
+            // Native visible/invisible toggle button
+            let kw_marker_pos =
+                Pos2::new(label_col.left() + EYE_LEFT_PAD + 6.0, y + LANE_HEIGHT / 2.0);
             let kw_marker_color = if is_active { color } else { theme.text_muted };
-            let kw_icon = if is_active { Icon::Visible } else { Icon::Invisible };
-            icons::paint_icon(ui.ctx(), &painter, kw_icon, kw_marker_pos, 12.0, kw_marker_color);
+            let kw_icon = if is_active {
+                Icon::Visible
+            } else {
+                Icon::Invisible
+            };
+            let kw_eye_rect = Rect::from_center_size(kw_marker_pos, Vec2::new(16.0, 14.0));
+            if icons::icon_button_at(ui, kw_eye_rect, kw_icon, kw_marker_color).clicked() {
+                toggle_kw = Some((ki, !tab.lane_active[ki]));
+            }
 
             // Label text (bold + bigger when active, normal when disabled)
             let text = &tab.filters[ki].text;
@@ -246,23 +375,19 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             } else {
                 text.clone()
             };
-            // Trash (remove) icon on the right side of the label row, inset so
+            // Trash (remove) button on the right side of the label row, inset so
             // it never crowds the lane content next to the label column.
             let trash_center_x = label_col.right() - LABEL_LANE_PAD - 6.0;
             let trash_rect = Rect::from_center_size(
                 Pos2::new(trash_center_x, y + LANE_HEIGHT / 2.0),
-                Vec2::new(14.0, 14.0),
+                Vec2::new(16.0, 14.0),
             );
-            let trash_id = ui.id().with(("kw_remove", ki));
-            let trash_resp = ui.interact(trash_rect, trash_id, Sense::click());
-            let trash_color = if trash_resp.hovered() { theme.text } else { theme.text_muted };
-            icons::paint_icon(ui.ctx(), &painter, Icon::Remove, trash_rect.center(), 12.0, trash_color);
+            let trash_resp = icons::icon_button_at(ui, trash_rect, Icon::Remove, theme.text_muted);
             if trash_resp.clicked() {
                 tab.pending_filter_removal = Some(ki);
             }
             if trash_resp.hovered() {
                 trash_resp.on_hover_text(format!("Remove '{}'", text));
-                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
             }
 
             // Label text, centered horizontally between the eye icon and trash icon.
@@ -275,6 +400,52 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             } else {
                 egui::FontId::monospace(11.0)
             };
+
+            // New-filter notification: briefly glow the lane label when the
+            // filter was just added (via the strip or the search "Add Filter").
+            if let Some((hki, at)) = tab.filter_highlight {
+                if hki == ki {
+                    let duration = Duration::from_millis(300);
+                    let elapsed = at.elapsed();
+                    if elapsed < duration {
+                        let t = elapsed.as_secs_f32() / duration.as_secs_f32();
+                        let glow = (1.0 - t).clamp(0.0, 1.0);
+                        let galley = ui.ctx().fonts_mut(|f| {
+                            f.layout_no_wrap(short.clone(), label_font.clone(), color)
+                        });
+                        let size = galley.size();
+                        let hl_rect = Rect::from_center_size(
+                            label_pos,
+                            Vec2::new(size.x + 14.0, size.y + 7.0),
+                        );
+                        let fill = Color32::from_rgba_unmultiplied(
+                            color.r(),
+                            color.g(),
+                            color.b(),
+                            (glow * 95.0) as u8,
+                        );
+                        painter.rect_filled(hl_rect, egui::CornerRadius::same(4), fill);
+                        painter.rect_stroke(
+                            hl_rect,
+                            egui::CornerRadius::same(4),
+                            Stroke::new(
+                                1.0_f32,
+                                Color32::from_rgba_unmultiplied(
+                                    color.r(),
+                                    color.g(),
+                                    color.b(),
+                                    (glow * 180.0) as u8,
+                                ),
+                            ),
+                            egui::StrokeKind::Middle,
+                        );
+                        ui.ctx().request_repaint();
+                    } else {
+                        tab.filter_highlight = None;
+                    }
+                }
+            }
+
             painter.text(
                 label_pos,
                 egui::Align2::CENTER_CENTER,
@@ -287,10 +458,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                 // chars) plus its total occurrence count, e.g. "error (334 occurrence)".
                 let count = tab.matches.get(ki).map_or(0, |m| m.len());
                 let plural = if count == 1 { "" } else { "s" };
-                kw_check_resp.on_hover_text(format!(
-                    "{} ({count} occurrence{plural})",
-                    text
-                ));
+                kw_check_resp.on_hover_text(format!("{} ({count} occurrence{plural})", text));
             }
 
             if !is_active {
@@ -311,16 +479,11 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             let kb = &tab.timeline.filter_buckets[ki];
 
             // ---- filter occurrences: diamonds (sparse) or bucket bars (dense) ----
-            let point_count =
-                tab.timeline
-                    .point_count_in_range(ki, view_start, view_end);
+            let point_count = tab.timeline.point_count_in_range(ki, view_start, view_end);
 
             if point_count > 0 && point_count <= DIAMOND_LIMIT {
                 // --- individual diamonds ---
-                if let Some(pts) = tab
-                    .timeline
-                    .points_in_range(ki, view_start, view_end)
-                {
+                if let Some(pts) = tab.timeline.points_in_range(ki, view_start, view_end) {
                     for (pi, &(line_idx, xv)) in pts.iter().enumerate() {
                         let cx = x_to_px(xv);
                         let cy = y + LANE_HEIGHT / 2.0; // vertical center of the lane
@@ -345,10 +508,8 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                         painter.add(diamond);
 
                         // Invisible click target per diamond (bigger to match larger diamond).
-                        let click_rect = Rect::from_center_size(
-                            Pos2::new(cx, cy),
-                            Vec2::new(12.0, 12.0),
-                        );
+                        let click_rect =
+                            Rect::from_center_size(Pos2::new(cx, cy), Vec2::new(12.0, 12.0));
                         let click_id = ui.id().with(("diamond", ki, line_idx));
                         let click_resp = ui.interact(click_rect, click_id, Sense::click());
                         if click_resp.clicked() {
@@ -369,11 +530,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                                 Stroke::new(1.5_f32, theme.diamond_hover),
                             ));
                             ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                            let tip = format!(
-                                "◆ {} — line {}",
-                                tab.filters[ki].text,
-                                line_idx + 1
-                            );
+                            let tip = format!("◆ {} — line {}", tab.filters[ki].text, line_idx + 1);
                             click_resp.on_hover_text(tip);
                         }
                     }
@@ -431,10 +588,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         painter.text(
             Pos2::new(hist.right() - 2.0, lanes_bottom),
             egui::Align2::RIGHT_TOP,
-            format!(
-                "+{} more",
-                tab.timeline.filter_buckets.len() - MAX_LANES
-            ),
+            format!("+{} more", tab.timeline.filter_buckets.len() - MAX_LANES),
             egui::FontId::monospace(7.5),
             theme.text_muted,
         );
@@ -463,10 +617,8 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                 let x0 = x_to_px(v0).max(hist.left());
                 let x1 = x_to_px(v1).min(hist.right());
                 if x1 > x0 {
-                    let shadow_rect = Rect::from_min_max(
-                        Pos2::new(x0, hist.top()),
-                        Pos2::new(x1, hist.bottom()),
-                    );
+                    let shadow_rect =
+                        Rect::from_min_max(Pos2::new(x0, hist.top()), Pos2::new(x1, hist.bottom()));
                     painter.rect_filled(
                         shadow_rect,
                         egui::CornerRadius::same(2),
@@ -501,7 +653,11 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                 Color32::from_black_alpha(80),
             );
             // Main rectangle
-            painter.rect_filled(marker_rect, egui::CornerRadius::same(1), theme.selection_line);
+            painter.rect_filled(
+                marker_rect,
+                egui::CornerRadius::same(1),
+                theme.selection_line,
+            );
         }
     }
 
@@ -529,28 +685,31 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             let dt1 = chrono::DateTime::from_timestamp_millis(tick_vs[n_ticks - 1]);
             match (dt0, dt1) {
                 (Some(d0), Some(d1)) => {
-                    let same_date = d0.format("%Y-%m-%d").to_string() == d1.format("%Y-%m-%d").to_string();
-                    let same_hour = same_date && d0.format("%H").to_string() == d1.format("%H").to_string();
-                    tick_vs.iter().map(|&v| {
-                        if let Some(dt) = chrono::DateTime::from_timestamp_millis(v) {
-                            if same_hour {
-                                dt.format("%M:%S%.3f").to_string()
-                            } else if same_date {
-                                dt.format("%H:%M:%S%.3f").to_string()
+                    let same_date =
+                        d0.format("%Y-%m-%d").to_string() == d1.format("%Y-%m-%d").to_string();
+                    let same_hour =
+                        same_date && d0.format("%H").to_string() == d1.format("%H").to_string();
+                    tick_vs
+                        .iter()
+                        .map(|&v| {
+                            if let Some(dt) = chrono::DateTime::from_timestamp_millis(v) {
+                                if same_hour {
+                                    dt.format("%M:%S%.3f").to_string()
+                                } else if same_date {
+                                    dt.format("%H:%M:%S%.3f").to_string()
+                                } else {
+                                    dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+                                }
                             } else {
-                                dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+                                format_ms(v)
                             }
-                        } else {
-                            format_ms(v)
-                        }
-                    }).collect()
+                        })
+                        .collect()
                 }
                 _ => tick_vs.iter().map(|&v| format_ms(v)).collect(),
             }
         }
-        TimelineDomain::Sequence => {
-            tick_vs.iter().map(|&v| format!("L{v}")).collect()
-        }
+        TimelineDomain::Sequence => tick_vs.iter().map(|&v| format!("L{v}")).collect(),
     };
 
     // Draw tick marks and labels.
@@ -558,10 +717,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         let x = tick_xs[i];
         // Tick mark.
         painter.line_segment(
-            [
-                Pos2::new(x, label_y),
-                Pos2::new(x, label_y + 6.0),
-            ],
+            [Pos2::new(x, label_y), Pos2::new(x, label_y + 6.0)],
             Stroke::new(1.0_f32, theme.axis),
         );
         // Label.
@@ -612,22 +768,17 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
 
     // ---- reset zoom button ----
     if zoomed {
-        let reset_rect =
-            Rect::from_min_size(hist.right_top() + Vec2::new(-28.0, 2.0), Vec2::new(26.0, 14.0));
-        let reset_id = ui.id().with("reset_zoom");
-        let reset_resp = ui.interact(reset_rect, reset_id, Sense::click());
-        let reset_color = if reset_resp.hovered() {
-            theme.text
-        } else {
-            theme.text_muted
-        };
-        icons::paint_icon(ui.ctx(), &painter, Icon::Reset, reset_rect.center(), 12.0, reset_color);
+        let reset_rect = Rect::from_min_size(
+            hist.right_top() + Vec2::new(-28.0, 2.0),
+            Vec2::new(26.0, 14.0),
+        );
+        let reset_resp = icons::icon_button_at(ui, reset_rect, Icon::Reset, theme.text_muted);
         if reset_resp.clicked() {
             tab.timeline_zoom = None;
             tab.selected_diamond = None;
         }
         if reset_resp.hovered() {
-            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+            reset_resp.on_hover_text("Reset zoom to full log");
         }
     }
 
@@ -653,7 +804,14 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         } else {
             theme.text_muted
         };
-        icons::paint_icon(ui.ctx(), &painter, Icon::ArrowsVertical, zoom_icon_rect.center(), 10.0, zoom_color);
+        icons::paint_icon(
+            ui.ctx(),
+            &painter,
+            Icon::ArrowsVertical,
+            zoom_icon_rect.center(),
+            10.0,
+            zoom_color,
+        );
         if zoom_icon_resp.hovered() {
             zoom_icon_resp.on_hover_text("Scroll to zoom in/out");
         }
@@ -670,18 +828,21 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         } else {
             theme.text_muted
         };
-        icons::paint_icon(ui.ctx(), &painter, Icon::ArrowsHorizontal, pan_icon_rect.center(), 10.0, pan_color);
+        icons::paint_icon(
+            ui.ctx(),
+            &painter,
+            Icon::ArrowsHorizontal,
+            pan_icon_rect.center(),
+            10.0,
+            pan_color,
+        );
         if pan_icon_resp.hovered() {
             pan_icon_resp.on_hover_text("Drag to pan left/right");
         }
     }
 
     // ---- minimap ----
-    painter.rect_filled(
-        minimap,
-        egui::CornerRadius::same(2),
-        theme.minimap_bg,
-    );
+    painter.rect_filled(minimap, egui::CornerRadius::same(2), theme.minimap_bg);
     // Draw full-range density in minimap.
     let full_span = (full_end - full_start).max(1);
     for i in 0..n {
@@ -708,8 +869,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     {
         let frac_left =
             ((view_start - full_start) as f64 / full_span as f64).clamp(0.0, 1.0) as f32;
-        let frac_right =
-            ((view_end - full_start) as f64 / full_span as f64).clamp(0.0, 1.0) as f32;
+        let frac_right = ((view_end - full_start) as f64 / full_span as f64).clamp(0.0, 1.0) as f32;
         let win_left = minimap.left() + frac_left * minimap.width();
         let win_right = minimap.left() + frac_right * minimap.width();
         let win_rect = Rect::from_min_max(
@@ -728,99 +888,18 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         let minimap_resp = ui.interact(minimap, ui.id().with("minimap"), Sense::click());
         if minimap_resp.clicked() {
             if let Some(pos) = minimap_resp.interact_pointer_pos() {
-                let frac =
-                    ((pos.x - minimap.left()) / minimap.width()).clamp(0.0, 1.0) as f64;
+                let frac = ((pos.x - minimap.left()) / minimap.width()).clamp(0.0, 1.0) as f64;
                 let center = full_start + (frac * full_span as f64) as i64;
                 let half = view_span / 2;
-                tab.timeline_zoom =
-                    Some(((center - half).max(full_start), (center + half).min(full_end)));
+                tab.timeline_zoom = Some((
+                    (center - half).max(full_start),
+                    (center + half).min(full_end),
+                ));
                 tab.selected_diamond = None;
             }
         }
         if minimap_resp.hovered() {
             ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-        }
-    }
-
-    // ---- bottom filter toolbar: toggle-all / clear-all buttons ----
-    if has_filters {
-        let bar_top = minimap.bottom() + 4.0;
-        let btn_h = 18.0_f32;
-        let btn_y = bar_top + ((rect.max.y - bar_top) - btn_h) / 2.0;
-        let txt_font = egui::FontId::proportional(11.0);
-        let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(&txt_font, 'm'));
-        let x0 = hist.left();
-
-        // --- Toggle all filter lanes (Everything Else is never touched) ---
-        let all_active = tab.lane_active.iter().all(|&a| a);
-        let (toggle_icon, toggle_txt) = if all_active {
-            (Icon::Invisible, "Hide all filters")
-        } else {
-            (Icon::Visible, "Show all filters")
-        };
-        let toggle_w = 12.0 + 4.0 + char_w * toggle_txt.len() as f32 + 12.0;
-        let toggle_rect =
-            Rect::from_min_size(Pos2::new(x0, btn_y), Vec2::new(toggle_w, btn_h));
-        let toggle_resp =
-            ui.interact(toggle_rect, ui.id().with("timeline_bar_toggle_all"), Sense::click());
-        let toggle_col = if toggle_resp.hovered() { theme.text } else { theme.text_muted };
-        icons::paint_icon(
-            ui.ctx(),
-            &painter,
-            toggle_icon,
-            Pos2::new(toggle_rect.left() + 9.0, toggle_rect.center().y),
-            11.0,
-            toggle_col,
-        );
-        painter.text(
-            Pos2::new(toggle_rect.left() + 14.0, toggle_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            toggle_txt,
-            txt_font.clone(),
-            toggle_col,
-        );
-        if toggle_resp.hovered() {
-            toggle_resp.clone().on_hover_text(if all_active {
-                "Hide every filter lane at once (Everything Else stays as-is)"
-            } else {
-                "Show every filter lane at once"
-            });
-            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-        }
-        if toggle_resp.clicked() {
-            tab.toggle_all_lanes();
-        }
-
-        // --- Clear all filters (asks for confirmation in app/view.rs) ---
-        let clear_txt = "Clear all filters";
-        let clear_x = toggle_rect.right() + 12.0;
-        let clear_w = 12.0 + 4.0 + char_w * clear_txt.len() as f32 + 12.0;
-        let clear_rect =
-            Rect::from_min_size(Pos2::new(clear_x, btn_y), Vec2::new(clear_w, btn_h));
-        let clear_resp =
-            ui.interact(clear_rect, ui.id().with("timeline_bar_clear_all"), Sense::click());
-        let clear_col = if clear_resp.hovered() { theme.text } else { theme.text_muted };
-        icons::paint_icon(
-            ui.ctx(),
-            &painter,
-            Icon::Remove,
-            Pos2::new(clear_rect.left() + 9.0, clear_rect.center().y),
-            11.0,
-            clear_col,
-        );
-        painter.text(
-            Pos2::new(clear_rect.left() + 14.0, clear_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            clear_txt,
-            txt_font,
-            clear_col,
-        );
-        if clear_resp.hovered() {
-            clear_resp.clone().on_hover_text("Remove every filter behind a confirmation popup");
-            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-        }
-        if clear_resp.clicked() {
-            tab.pending_clear_filters = true;
         }
     }
 
@@ -896,8 +975,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     // ---- brush-select (shift+drag) ----
     if ui.input(|i| i.modifiers.shift) {
         if response.dragged() {
-            let Some(drag_origin) = ui.input(|i| i.pointer.interact_pos())
-            else {
+            let Some(drag_origin) = ui.input(|i| i.pointer.interact_pos()) else {
                 return;
             };
             let Some(current) = ui.input(|i| i.pointer.interact_pos()) else {
@@ -909,11 +987,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                 Pos2::new(brush_left, hist.top()),
                 Pos2::new(brush_right, lanes_bottom),
             );
-            painter.rect_filled(
-                brush_rect,
-                egui::CornerRadius::same(2),
-                theme.brush_fill,
-            );
+            painter.rect_filled(brush_rect, egui::CornerRadius::same(2), theme.brush_fill);
             painter.rect_stroke(
                 brush_rect,
                 egui::CornerRadius::same(2),
@@ -923,17 +997,12 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         }
         if response.drag_stopped() {
             if let Some(start) = ui.input(|i| i.pointer.interact_pos()) {
-                let drag_origin = response
-                    .interact_pointer_pos()
-                    .unwrap_or(start);
+                let drag_origin = response.interact_pointer_pos().unwrap_or(start);
                 if let Some(current) = Some(start) {
                     let x1 = px_to_x(drag_origin.x.min(current.x));
                     let x2 = px_to_x(drag_origin.x.max(current.x));
                     if (x2 - x1).abs() > 100 {
-                        tab.timeline_zoom = Some((
-                            x1.max(full_start),
-                            x2.min(full_end),
-                        ));
+                        tab.timeline_zoom = Some((x1.max(full_start), x2.min(full_end)));
                         tab.selected_diamond = None;
                     }
                 }
@@ -960,10 +1029,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     }
 
     // ---- click (no drag, no shift) → snap to nearest match ----
-    if response.clicked()
-        && !response.dragged()
-        && !ui.input(|i| i.modifiers.shift)
-    {
+    if response.clicked() && !response.dragged() && !ui.input(|i| i.modifiers.shift) {
         if let Some(pos) = response.interact_pointer_pos() {
             let v = px_to_x(pos.x);
             let target = tab
@@ -1020,18 +1086,19 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
                 let v = px_to_x(pos.x);
                 ui.label(RichText::new(v_caption(tab.timeline.domain, v)).strong());
-                let b = tab
-                    .timeline
-                    .bucket_for(v, tab.doc.total_lines());
+                let b = tab.timeline.bucket_for(v, tab.doc.total_lines());
                 ui.label(format!("{} lines in bucket", tab.timeline.density[b]));
-                for (ki, kb) in tab.timeline.filter_buckets.iter().enumerate().take(MAX_LANES.min(tab.filters.len())) {
+                for (ki, kb) in tab
+                    .timeline
+                    .filter_buckets
+                    .iter()
+                    .enumerate()
+                    .take(MAX_LANES.min(tab.filters.len()))
+                {
                     if kb[b] > 0 {
                         ui.label(
-                            RichText::new(format!(
-                                "◆ {} ×{}",
-                                tab.filters[ki].text, kb[b]
-                            ))
-                            .color(tab.filters[ki].color),
+                            RichText::new(format!("◆ {} ×{}", tab.filters[ki].text, kb[b]))
+                                .color(tab.filters[ki].color),
                         );
                     }
                 }
@@ -1062,11 +1129,7 @@ fn domain_span(domain: &TimelineDomain, total_lines: usize) -> (i64, i64) {
     }
 }
 
-fn effective_zoom(
-    zoom: &Option<(i64, i64)>,
-    full_start: i64,
-    full_end: i64,
-) -> (i64, i64) {
+fn effective_zoom(zoom: &Option<(i64, i64)>, full_start: i64, full_end: i64) -> (i64, i64) {
     match zoom {
         Some((s, e)) => ((*s).max(full_start), (*e).min(full_end)),
         None => (full_start, full_end),
@@ -1117,8 +1180,8 @@ fn approx_line(
             Some(n - 1)
         }
         TimelineDomain::Sequence => {
-            let frac = ((v - view_start) as f64 / (view_end - view_start).max(1) as f64)
-                .clamp(0.0, 1.0);
+            let frac =
+                ((v - view_start) as f64 / (view_end - view_start).max(1) as f64).clamp(0.0, 1.0);
             Some((frac * (n - 1) as f64) as usize)
         }
     }

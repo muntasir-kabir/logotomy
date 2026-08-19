@@ -14,8 +14,8 @@
 //! Performance: zero allocation when nothing matches (`Cow::Borrowed`),
 //! single pass, single output buffer when something does.
 
-use std::borrow::Cow;
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 
 /// Per-document memo cache: raw token → masked replacement (`None` = keep
 /// as-is). Log vocabularies are small and repetitive, so after a few hundred
@@ -136,9 +136,7 @@ impl LogMasker {
         if cache.0.contains_key(tok) {
             return cache.0.get(tok).and_then(|m| m.as_deref());
         }
-        let masked = self
-            .mask_token(tok)
-            .map(|m| Box::<str>::from(m.as_ref()));
+        let masked = self.mask_token(tok).map(|m| Box::<str>::from(m.as_ref()));
         cache.0.insert(Box::from(tok), masked);
         cache.0.get(tok).and_then(|m| m.as_deref())
     }
@@ -240,13 +238,14 @@ impl LogMasker {
                 let run = &tok[start..i];
                 // Numeric runs of ANY length are dynamic (`worker-0` →
                 // `worker-<NUM>`); hex needs length to avoid false positives.
-                let masked: Option<&'static str> = if self.config.mask_nums && looks_like_number(run) {
-                    Some(MASK_NUM)
-                } else if run.len() >= 2 && self.config.mask_hex && looks_like_hex_id(run) {
-                    Some(MASK_HEX)
-                } else {
-                    None
-                };
+                let masked: Option<&'static str> =
+                    if self.config.mask_nums && looks_like_number(run) {
+                        Some(MASK_NUM)
+                    } else if run.len() >= 2 && self.config.mask_hex && looks_like_hex_id(run) {
+                        Some(MASK_HEX)
+                    } else {
+                        None
+                    };
                 if let Some(m) = masked {
                     let buf = out.get_or_insert_with(|| {
                         let mut s = String::with_capacity(tok.len() + 6);
@@ -283,7 +282,9 @@ fn looks_like_url(tok: &str) -> bool {
 }
 
 fn looks_like_email(tok: &str) -> bool {
-    let Some(at) = tok.find('@') else { return false };
+    let Some(at) = tok.find('@') else {
+        return false;
+    };
     at > 0 && at + 3 < tok.len() && tok[at + 1..].contains('.')
 }
 
@@ -335,9 +336,7 @@ fn looks_like_ipv4(tok: &str) -> bool {
 /// intentionally — too short to bother).
 fn looks_like_ipv6(tok: &str) -> bool {
     let colons = tok.bytes().filter(|&b| b == b':').count();
-    colons >= 2
-        && tok.len() >= 6
-        && tok.bytes().all(|b| b.is_ascii_hexdigit() || b == b':')
+    colons >= 2 && tok.len() >= 6 && tok.bytes().all(|b| b.is_ascii_hexdigit() || b == b':')
 }
 
 /// `14:30`, `14:30:22`, `14:30:22.123`
@@ -599,7 +598,10 @@ mod tests {
     #[test]
     fn key_value_keeps_key() {
         let m = LogMasker::default();
-        assert_eq!(m.mask("request status=200 done"), "request status=<NUM> done");
+        assert_eq!(
+            m.mask("request status=200 done"),
+            "request status=<NUM> done"
+        );
     }
 
     #[test]
@@ -624,7 +626,10 @@ mod tests {
         assert!(out.contains("<HEX>"), "hex should be masked: {out}");
         assert!(out.contains("<IP>"), "ip should be masked: {out}");
         assert!(!out.contains("981a2f3b"), "hex value should be gone: {out}");
-        assert!(!out.contains("192.168.1.50"), "ip value should be gone: {out}");
+        assert!(
+            !out.contains("192.168.1.50"),
+            "ip value should be gone: {out}"
+        );
     }
 
     #[test]
@@ -638,7 +643,10 @@ mod tests {
         let m = LogMasker::default();
         let input = "INFO all systems nominal";
         let out = m.mask(input);
-        assert!(matches!(out, Cow::Borrowed(_)), "should be borrowed: {out:?}");
+        assert!(
+            matches!(out, Cow::Borrowed(_)),
+            "should be borrowed: {out:?}"
+        );
     }
 
     #[test]
@@ -692,7 +700,11 @@ mod tests {
         let m = LogMasker::default();
         let header = vec![None, Some("<HOST>")];
         // Pure-text dynamic value → whole-token mask.
-        let out = m.mask_with_header("INFO web-prod request ok", &header, &mut MaskCache::default());
+        let out = m.mask_with_header(
+            "INFO web-prod request ok",
+            &header,
+            &mut MaskCache::default(),
+        );
         assert_eq!(out, "INFO <HOST> request ok");
     }
 
@@ -705,7 +717,11 @@ mod tests {
         let out = m.mask_with_header("MyApp[45678:8] hello", &header, &mut MaskCache::default());
         assert_eq!(out, "MyApp[<NUM>:<NUM>] hello");
         // Source ref: filename survives, line number masked.
-        let out = m.mask_with_header("CoreDataStack.swift:280 hello", &header, &mut MaskCache::default());
+        let out = m.mask_with_header(
+            "CoreDataStack.swift:280 hello",
+            &header,
+            &mut MaskCache::default(),
+        );
         assert_eq!(out, "CoreDataStack.swift:<NUM> hello");
     }
 
@@ -741,8 +757,14 @@ mod tests {
     #[test]
     fn classify_source_ref_with_line_number() {
         // `AppDelegate.swift:42` — the `:42` part has a numeric run.
-        assert_eq!(classify_token_public("AppDelegate.swift:42"), Some(MASK_NUM));
-        assert_eq!(classify_token_public("ViewController.swift:142"), Some(MASK_NUM));
+        assert_eq!(
+            classify_token_public("AppDelegate.swift:42"),
+            Some(MASK_NUM)
+        );
+        assert_eq!(
+            classify_token_public("ViewController.swift:142"),
+            Some(MASK_NUM)
+        );
     }
 
     #[test]
@@ -754,7 +776,10 @@ mod tests {
     #[test]
     fn classify_cross_format_header_tokens() {
         // Android logcat brief: `I/Tag(1234):`
-        assert_eq!(classify_token_public("I/ActivityManager(1234):"), Some(MASK_NUM));
+        assert_eq!(
+            classify_token_public("I/ActivityManager(1234):"),
+            Some(MASK_NUM)
+        );
         // nginx error: `1234#5678:`
         assert_eq!(classify_token_public("1234#5678:"), Some(MASK_NUM));
         // Bracketed pid/tid pairs: `[1234:5678]`

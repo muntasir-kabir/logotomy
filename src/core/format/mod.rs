@@ -21,7 +21,7 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use crate::core::masking::{LogMasker, MaskCache};
-use crate::core::time::{TimeDetector, TimeFormat};
+use crate::core::time::{CustomTimeFormat, TimeDetector, TimeFormat, TimeFormatKind};
 
 pub use cef::Cef;
 pub use json::Json;
@@ -116,6 +116,17 @@ impl FormatDetector {
         format: &'static dyn LogFormat,
     ) -> Option<&'static dyn TimeFormat> {
         TimeDetector::detect_among(sample, format.time_formats())
+    }
+
+    /// Resolve the timestamp family for a detected format from a sample,
+    /// considering the format's built-in families plus user-supplied custom
+    /// recognizers. Returns a [`TimeFormatKind`] that may be built-in or custom.
+    pub fn detect_time_custom<S: AsRef<str>>(
+        sample: impl Iterator<Item = S>,
+        format: &'static dyn LogFormat,
+        custom: &[CustomTimeFormat],
+    ) -> Option<TimeFormatKind> {
+        TimeDetector::detect_any(sample, format.time_formats(), custom)
     }
 }
 

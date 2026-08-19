@@ -11,7 +11,7 @@ The MCP server can be started in two ways:
 1.  **GUI Integration**:
     - In the `logotomy` GUI, use the **"Start MCP"** button in the top toolbar (next to Settings) to start the server, or the Settings popup's "Start MCP Server" button.
     - The server binds a **random OS-assigned port** and appends a **random 6-digit secret token** to its URL (`http://127.0.0.1:PORT/SECRET`). The token is regenerated every session and the server rejects requests without the correct `/{SECRET}` path prefix.
-    - The server runs in a background thread within the GUI application's process. Any log files currently open in the GUI are automatically shared with the MCP server and become available to clients. Use **"Copy MCP instruction"** to copy a ready-to-paste connection instruction for your coding agent.
+    - The server runs in a background thread within the GUI application's process. The selected GUI tab is attached to the MCP server and is available without calling `load_log`. Use **"Copy MCP instruction"** to copy a ready-to-paste prompt that explains the GUI-mode workflow, recommends starting with `summarize_log`, and warns that the URL contains a temporary local secret. Stop MCP when finished.
 
 2.  **Standalone Command-Line**:
     - The server can be run as a headless process from your terminal:
@@ -111,14 +111,14 @@ These tools are designed for low-token AI investigation: they are stateless (opt
 
 ### Filter Tools
 
-The log's filter set is a list of case-insensitive keyword terms (max 20). When any filter is set, every analysis tool with `with_filtered_log=true` (the default) restricts its results to the **union of the filters' matches** — the "Everything Else" lane never applies. In GUI mode the filter set is shared with the served tab's live filter lanes (either side's edits propagate to the other). In headless mode filters are server-side per-`log_id`.
+The log's filter set is a list of case-sensitive keyword terms (max 20). When any filter is set, every analysis tool with `with_filtered_log=true` (the default) restricts its results to the **union of the filters' matches** — the "Everything Else" lane never applies. In GUI mode the filter set is shared with the served tab's live filter lanes (either side's edits propagate to the other). In headless mode filters are server-side per-`log_id`.
 
 *   `filters_get(log_id?)`
     -   **Description**: List the current filter set.
     -   **Returns**: `{filters: [{id, filter_text}], filter_count}` where `id` is the filter's position.
 
 *   `filters_add(log_id?, filter_text: string)` — add a keyword filter.
-    -   **Rules**: case-insensitive dedupe (duplicate → error), 20-filter cap, empty text → error.
+    -   **Rules**: case-sensitive dedupe (duplicate → error), 20-filter cap, empty text → error.
     -   **Returns**: the full updated `{filters: [{id, filter_text}], filter_count}`.
 
 *   `filters_remove(log_id?, id: number)` — remove a filter by position.
@@ -126,6 +126,14 @@ The log's filter set is a list of case-insensitive keyword terms (max 20). When 
     -   **Returns**: the full updated `{filters: [{id, filter_text}], filter_count}`.
 
 ## Pros and Cons
+
+### Agent integration notes
+
+- Call `initialize`, then `tools/list`; the server includes concise workflow instructions and tool annotations (`readOnlyHint`, `destructiveHint`, and `idempotentHint`). Clients should use these hints as guidance, not as a security boundary.
+- Tool failures are returned as MCP `isError: true` results whose text is a JSON object with `error`, `message`, and `retryable` fields. Successful tool payloads are also JSON encoded in a text content item for compatibility with clients that do not consume `structuredContent`.
+- Numeric pagination and limit arguments must be non-negative integers. Values above documented hard caps are safely capped; invalid types are rejected instead of silently falling back to defaults.
+- When `with_filtered_log` is left at its default and no filters exist, analysis returns an actionable `no log` response with suggested `summarize_log(with_filtered_log=false)` and `filters_add` calls.
+- In `summarize_log`, `template_count` is the total indexed template count (matching `load_log`), while `matched_template_count` is the number represented in the selected range/filter.
 
 ### Pros
 

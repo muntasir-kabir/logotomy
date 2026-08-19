@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use crate::ui::app::model::LogTab;
 use crate::ui::icons::{self, Icon};
-use crate::ui::log_view::{Highlights, line_job};
+use crate::ui::log_view::{line_job, Highlights};
 use crate::ui::theme::Theme;
-use logotomy::core::timeline::TimelineDomain;
 use logotomy::core::time::format_ms;
+use logotomy::core::timeline::TimelineDomain;
 
 /// Format a duration in milliseconds as a human-readable string.
 fn format_duration_ms(ms: i64) -> String {

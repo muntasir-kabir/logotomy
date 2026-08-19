@@ -46,9 +46,15 @@ pub fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
 
     let faces: [(&str, &'static [u8]); 4] = [
-        (FONT_REGULAR, include_bytes!("Space_Mono/SpaceMono-Regular.ttf")),
+        (
+            FONT_REGULAR,
+            include_bytes!("Space_Mono/SpaceMono-Regular.ttf"),
+        ),
         (FONT_BOLD, include_bytes!("Space_Mono/SpaceMono-Bold.ttf")),
-        (FONT_ITALIC, include_bytes!("Space_Mono/SpaceMono-Italic.ttf")),
+        (
+            FONT_ITALIC,
+            include_bytes!("Space_Mono/SpaceMono-Italic.ttf"),
+        ),
         (
             FONT_BOLD_ITALIC,
             include_bytes!("Space_Mono/SpaceMono-BoldItalic.ttf"),
@@ -96,7 +102,11 @@ mod tests {
             let bytes = data.font.as_ref();
             assert!(bytes.len() > 1_000, "face {name} is unexpectedly small");
             // TrueType "sfnt" magic: 0x00010000 (big-endian).
-            assert_eq!(&bytes[..4], &[0x00, 0x01, 0x00, 0x00], "face {name} is not a TrueType font");
+            assert_eq!(
+                &bytes[..4],
+                &[0x00, 0x01, 0x00, 0x00],
+                "face {name} is not a TrueType font"
+            );
         }
     }
 
@@ -113,8 +123,12 @@ mod tests {
         assert!(family.iter().any(|n| n == "NotoEmoji-Regular"));
         // Only the log family references Space Mono; the built-in egui
         // families must be untouched so the rest of the UI doesn't change.
-        assert!(!fonts.families[&FontFamily::Monospace].iter().any(|n| n.starts_with("space_mono")));
-        assert!(!fonts.families[&FontFamily::Proportional].iter().any(|n| n.starts_with("space_mono")));
+        assert!(!fonts.families[&FontFamily::Monospace]
+            .iter()
+            .any(|n| n.starts_with("space_mono")));
+        assert!(!fonts.families[&FontFamily::Proportional]
+            .iter()
+            .any(|n| n.starts_with("space_mono")));
     }
 
     #[test]

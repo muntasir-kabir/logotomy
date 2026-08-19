@@ -1,4 +1,38 @@
-# Fix: log-view search & double-click keyword highlights were never shown
+# Change: MCP initialization instructions distinguish GUI and headless workflows
+
+Made release packaging safer and more reproducible by using the native Intel macOS runner, validating release tags against Cargo and packager versions, pinning cargo-packager, and publishing platform-specific first-run instructions.
+
+Captured the benchmark output from every release target and publish it as one combined `benchmark-results.txt` file alongside the installers and checksums.
+
+Added common regional and RFC-2822 log timestamp extraction families, fractional seconds for year-first slash dates, and regression coverage so these logs receive a timeline automatically.
+
+Clarified MCP initialization instructions so agents distinguish headless `load_log` setup from GUI sessions with an already attached log, and follow the recommended full-log analysis workflow.
+
+# Fix: restore text selection in the central log view
+
+Improved MCP agent interoperability with initialization workflow guidance, tool safety/idempotency annotations, structured tool errors, and strict numeric argument validation; corrected filter-case documentation to match the case-sensitive implementation.
+
+Clarified empty-filter responses with actionable next-call suggestions and separated total indexed templates from templates matched by a summary range/filter.
+
+Updated the AI-agent integration guide with current Claude Code, VS Code/Copilot, Cursor, Cline, and Codex formats; safely escapes executable paths and explains standalone stdio versus GUI HTTP connections.
+
+Improved the GUI Start MCP experience with an actionable GUI-mode prompt, clearer security/status messaging, disabled startup without an open log, more tolerant startup timing, and tab-switch notifications.
+
+Re-enabled native egui text selection for log content so users can select and copy text with the mouse. Whole-line drag selection and its selected-line count remain available for pinning.
+
+# Fix: timeline filter controls are grouped beside the Timeline header
+
+Moved the Add Filter section out of the app toolbar and into the Timeline header, beside the Show/Hide and Clear all filter controls. The controls are now left-aligned after the “Timeline” label, with a separator before Add Filter.
+
+# Change: timeline filter controls moved to the header; "Custom date" moved into Settings → Log Parsing
+
+Two UI relocations. (1) `src/ui/timeline/view.rs`: the "Show/Hide all filters" and "Clear all filters" buttons moved from the bottom filter toolbar into the **top "Timeline" header row** (right-aligned, shown only while filters exist, plain native egui buttons). The now-unused bottom bar, its `BOTTOM_BAR_HEIGHT` constant, and that height contribution in `panel_height()` were removed; the unused `icon_text_button_at` helper was dropped from `src/ui/icons.rs`. (2) `src/ui/app/view.rs` + `src/ui/settings/view.rs`: the "Custom date" button was removed from the app top bar and re-added under **Settings → Log Parsing** (with a Date icon), right before the "Similarity threshold" group; it toggles the same `show_custom_date_popup` modal as before.
+
+Replaced hand-drawn `paint_icon` + `ui.interact` buttons with **default egui `Button`s** (icon or icon+text) wherever they fit, so hover feedback and animation come from egui itself and stay consistent across the app. New reusable helpers in `src/ui/icons.rs`: `icon_button_at` (icon-only button placed at an exact rect) and `icon_text_button_at` (icon+text button), both using `ui.put` + zero/minimal `button_padding` for precise placement on the painter-layout timeline. Converted: timeline filter eye **visible/invisible** toggle and **trash delete** per lane (and the Everything Else eye), the **reset-zoom** button, and the bottom-bar **"Show/Hide all filters"** + **"Clear all filters"**; log-view search **▲/▼/✕** now use `Button::new(icon_image(...))` (nav stays disabled/muted when no matches). Also added a **whole-lane hover highlight** in `src/ui/timeline/view.rs`: hovering any part of a filter lane (or Everything Else) paints a translucent lane-colored fill+border background spanning the label column through the lane content, so the visible/invisible marker, filter text, delete button and lane read as one controllable row; the native buttons still render their own hover on top. (`src/ui/timeline/view.rs`, `src/ui/log_view/view.rs`, `src/ui/icons.rs`.)
+
+`sample.log`-style lines use a **non-zero-padded hour with a 12-hour `AM/PM` marker** (often preceded by `U+202F`), which the ISO-8601 regex (zero-padded 24h hour, no AM/PM) rejected, so no timestamp family was detected and the file had no timeline/date. Added a separate `src/core/time/iso12.rs` family (single/double-digit hour, `AM`/`PM`, space/narrow-no-break-space tolerant, 12h→24h conversion) registered in `TIME_FORMATS`, and a full **custom date-recognizer** system: users define a regex with named groups (`year month day hour min sec` + optional `ms`, `ampm`), verify it live in a new **"Custom date"** popup (top bar) which prints `Year: … Month: … Date: … Hour: … Min: … Sec: … MILLI SECOND: …`, and persist to `~/.logotomy/custom_date_format_list.json`. Custom recognizers are compiled and tried alongside the built-ins whenever a file is opened (`LogDocument::open_with_custom` / `load_with_custom`), with a "Re-scan active log" button to re-run on the current file. (`src/core/time/iso12.rs`, `src/core/time/custom.rs`, `src/core/time/mod.rs`, `src/core/document.rs`, `src/core/format/mod.rs`, `src/core/settings.rs`, `src/ui/custom_date/`, `src/ui/app/model.rs`, `src/ui/app/view.rs`.)
+
+
 
 In `render_row` (`src/ui/log_view/view.rs`), every `LayoutJob` section's background was being overwritten with the row-selection colour (`galley.format.background = bg`), which erased the per-span search and keyword highlight backgrounds that `line_job`/`append_highlighted` paint behind matched text. As a result neither search-box matches nor double-clicked keywords showed any highlight. Removed that overwrite so the themed `search_highlight_bg` / `keyword_highlight_bg` (the "text highlight colour") render on every visible matching span, on every row, and re-apply as you scroll (selection tint still applies to non-highlighted spans). Regression test: `line_job_preserves_search_and_keyword_highlight_backgrounds`.
 

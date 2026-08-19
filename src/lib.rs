@@ -13,4 +13,6 @@ pub use core::format::{FormatDetector, LogFormat};
 pub use core::masking::{LogMasker, MaskConfig};
 pub use core::settings::Settings;
 pub use core::timeline::{Timeline, TimelineDomain, DEFAULT_BUCKETS};
-pub use core::time::{TimeDetector, TimeFormat};
+pub use core::time::{
+    CustomDateFormat, TimeComponents, TimeDetector, TimeFormat, TimeFormatKind,
+};

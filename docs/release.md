@@ -93,20 +93,35 @@ target/<triple>/release/
 
 ## 4. CI/CD
 
-`.github/workflows/release.yml` does all four automatically when a `v*` tag is
-pushed: tests + bench, then packaging (`--out-dir dist`), then staging renamed
+`.github/workflows/release.yml` does all four automatically when a matching
+`v*` tag is pushed: version validation, tests + bench, then packaging
+(`--out-dir dist`), then staging renamed
 installers (`logotomy-<tag>-<target>.<ext>`) and uploading them plus
-`checksums.sha256` to the GitHub Release. Raw tarball/zip archives are **not**
-published anymore.
+the combined `benchmark-results.txt` and `checksums.sha256` to the GitHub
+Release. Raw tarball/zip archives are **not** published anymore.
+
+The packager is pinned to version `0.11.8` for reproducible release builds.
+The Intel macOS target runs on a native `macos-15-intel` runner; the Apple
+Silicon target runs on `macos-latest`.
+
+Each platform job benchmarks the release build against the generated
+`iOS-100K.log`. The release job combines the per-target output into
+`benchmark-results.txt`, so the GitHub Release contains one file with the
+Windows, Ubuntu/Linux, macOS Apple Silicon, and macOS Intel results.
 
 ## 5. Manual smoke test
 
-After building an installer you can verify it right away:
+After building an installer you can verify it right away. The GitHub Release
+also includes these first-run instructions:
 - **Windows**: double-click `logotomy-<version>-setup.exe` → install → launch.
 - **Ubuntu**: `sudo apt install ./logotomy_0.1.0_amd64.deb` → run `logotomy`.
-- **macOS**: open `logotomy_0.1.0_aarch64.dmg` → drag `logotomy.app` to
-  Applications → launch (unsigned builds trigger a Gatekeeper right-click
-  "Open" the first time).
+- **macOS**: open the DMG → drag `logotomy.app` to Applications → right-click
+  the app and choose **Open** on first launch. If it remains blocked, remove
+  quarantine only after verifying the download: `xattr -d
+  com.apple.quarantine /Applications/logotomy.app`.
+- **Windows**: if SmartScreen shows “Windows protected your PC”, verify the
+  download, click **More info**, then **Run anyway**.
+- **Ubuntu/Linux AppImage**: run `chmod +x logotomy-*.AppImage` before launching.
 
 ## Future work
 - Code signing: Windows Authenticode (SmartScreen), macOS Developer-ID +

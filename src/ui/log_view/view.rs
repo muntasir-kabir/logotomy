@@ -6,6 +6,7 @@
 //! scroll-position indicator bar on the right edge.
 
 use std::cell::Cell;
+use std::time::Duration;
 
 use aho_corasick::AhoCorasick;
 use eframe::egui;
@@ -14,7 +15,7 @@ use egui::{Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind};
 use logotomy::core::document::LogDocument;
 use logotomy::core::time::format_ms;
 
-use crate::ui::app::model::{PinEntry, Filter, LogTab, TrimAction};
+use crate::ui::app::model::{Filter, LogTab, PinEntry, TrimAction, MAX_FILTERS};
 use crate::ui::icons::{self, Icon};
 use crate::ui::theme::Theme;
 
@@ -74,7 +75,10 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     };
 
     // Reserve space for the scroll bar on the right edge.
-    let available = egui::Vec2::new(ui.available_width() - SCROLL_BAR_WIDTH - 4.0, ui.available_height());
+    let available = egui::Vec2::new(
+        ui.available_width() - SCROLL_BAR_WIDTH - 4.0,
+        ui.available_height(),
+    );
 
     // Cell to capture the exact rendered range from show_rows, avoiding
     // offset-based approximation that can drift due to partial rows and egui buffering.
@@ -93,12 +97,15 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         .id_salt("log_scroll")
         .max_width(max_line_px);
 
-    if let Some(offset) = compute_pending_scroll_offset(tab, pending, row_height, avail_height, total_visible) {
+    if let Some(offset) =
+        compute_pending_scroll_offset(tab, pending, row_height, avail_height, total_visible)
+    {
         scroll_area = scroll_area.vertical_scroll_offset(offset);
     } else if let Some(anchor) = preserve_anchor {
         // No pending scroll (diamond click etc.), so honor a filter-change
         // anchor by top-aligning the preserved reference line.
-        if let Some(offset) = compute_preserve_anchor_offset(tab, anchor, row_height, total_visible) {
+        if let Some(offset) = compute_preserve_anchor_offset(tab, anchor, row_height, total_visible)
+        {
             scroll_area = scroll_area.vertical_scroll_offset(offset);
         }
     }
@@ -204,7 +211,10 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     }
 
     // ---- Esc peels one layer at a time ----
-    if tab.pin_modal.is_none() && tab.pending_selection.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if tab.pin_modal.is_none()
+        && tab.pending_selection.is_none()
+        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+    {
         if tab.keyword_highlight.is_some() {
             tab.set_keyword_highlight(None);
         } else if !tab.find_query.is_empty() {
@@ -224,7 +234,14 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                 if tab.pending_selection.is_none() && tab.pin_modal.is_none() {
                     tab.drag_selecting = true;
                     tab.drag_start_pos = Some(press_pos);
-                    if let Some(row) = row_under_pointer(ui, inner_rect, output.state.offset.y, row_height, total_visible, &tab.visible_lines) {
+                    if let Some(row) = row_under_pointer(
+                        ui,
+                        inner_rect,
+                        output.state.offset.y,
+                        row_height,
+                        total_visible,
+                        &tab.visible_lines,
+                    ) {
                         tab.drag_start_line = Some(row);
                         tab.drag_current_line = Some(row);
                         tab.selection_range = Some((row, row));
@@ -235,7 +252,14 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     }
 
     if tab.drag_selecting {
-        if let Some(row) = row_under_pointer(ui, inner_rect, output.state.offset.y, row_height, total_visible, &tab.visible_lines) {
+        if let Some(row) = row_under_pointer(
+            ui,
+            inner_rect,
+            output.state.offset.y,
+            row_height,
+            total_visible,
+            &tab.visible_lines,
+        ) {
             tab.drag_current_line = Some(row);
             if let (Some(start), Some(current)) = (tab.drag_start_line, tab.drag_current_line) {
                 let lo = start.min(current);
@@ -249,7 +273,10 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         if !pointer.primary_down() {
             tab.drag_selecting = false;
             let release_pos = pointer.latest_pos();
-            let is_drag = tab.drag_start_pos.zip(release_pos).is_some_and(|(start, end)| start.distance(end) >= DRAG_THRESHOLD);
+            let is_drag = tab
+                .drag_start_pos
+                .zip(release_pos)
+                .is_some_and(|(start, end)| start.distance(end) >= DRAG_THRESHOLD);
             if is_drag {
                 if let (Some(start), Some(end)) = (tab.drag_start_line, tab.drag_current_line) {
                     let lo = start.min(end);
@@ -273,7 +300,11 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
 
     // If the primary button was released outside a drag (no pending_selection),
     // clear transient selection so it doesn't linger.
-    if !tab.drag_selecting && tab.selection_range.is_some() && tab.pending_selection.is_none() && !pointer.primary_down() {
+    if !tab.drag_selecting
+        && tab.selection_range.is_some()
+        && tab.pending_selection.is_none()
+        && !pointer.primary_down()
+    {
         tab.selection_range = None;
     }
 
@@ -284,11 +315,11 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             Some(vis) => vis.iter().filter(|&&ln| ln >= start && ln <= end).count(),
             None => end - start + 1,
         };
- 
+
         let popup_id = egui::Id::new("selection_popup");
-        let popup_anchor_pos = tab.drag_start_pos.unwrap_or_else(|| {
-            ui.input(|i| i.pointer.latest_pos().unwrap_or_default())
-        });
+        let popup_anchor_pos = tab
+            .drag_start_pos
+            .unwrap_or_else(|| ui.input(|i| i.pointer.latest_pos().unwrap_or_default()));
         let popup_pos = popup_anchor_pos + egui::vec2(8.0, 8.0);
 
         let area = egui::Area::new(popup_id)
@@ -298,7 +329,11 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         let area_resp = area.show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_min_width(240.0);
-                ui.label(RichText::new(format!("Selected: {} lines ({}-{})", count, start, end)).strong().size(13.0));
+                ui.label(
+                    RichText::new(format!("Selected: {} lines ({}-{})", count, start, end))
+                        .strong()
+                        .size(13.0),
+                );
                 ui.separator();
 
                 ui.horizontal(|ui| {
@@ -343,7 +378,8 @@ pub fn pin_modal_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     let (start, end) = range;
     // Compute the actual visible lines within the range (respects text filters).
     let visible_in_range: Vec<usize> = match &tab.visible_lines {
-        Some(vis) => vis.iter()
+        Some(vis) => vis
+            .iter()
             .filter(|&&ln| ln >= start && ln <= end)
             .copied()
             .collect(),
@@ -386,7 +422,9 @@ pub fn pin_modal_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             let text_resp = ui.add_sized(
                 egui::vec2(ui.available_width(), 60.0),
                 egui::TextEdit::multiline(&mut tab.pin_comment)
-                    .hint_text("Type your comment. Enter to save, Shift+Enter for newline, Esc to cancel…")
+                    .hint_text(
+                        "Type your comment. Enter to save, Shift+Enter for newline, Esc to cancel…",
+                    )
                     .desired_width(f32::INFINITY),
             );
             // Auto-focus the text input when the modal opens
@@ -394,7 +432,8 @@ pub fn pin_modal_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
 
             // Save on Enter (no Shift), Esc to cancel
             if text_resp.lost_focus() {
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.input(|i| i.modifiers.shift) {
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.input(|i| i.modifiers.shift)
+                {
                     do_save = true;
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -403,7 +442,8 @@ pub fn pin_modal_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             }
 
             // Also handle Enter/Esc on the TextEdit while focused (not just on lost_focus)
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.input(|i| i.modifiers.shift);
+            let enter_pressed =
+                ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.input(|i| i.modifiers.shift);
             let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
             if text_resp.has_focus() {
                 if enter_pressed {
@@ -419,24 +459,55 @@ pub fn pin_modal_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
 
             let max_preview = 20;
             if actual_count > max_preview {
-                egui::ScrollArea::vertical().max_height(180.0).auto_shrink([false, false]).show(ui, |ui| {
-                    for &line_idx in visible_in_range.iter().take(max_preview / 2) {
-                        let job = line_job(&tab.doc, &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()), line_idx, false, font_id.clone(), theme);
-                        ui.add(egui::Label::new(job));
-                    }
-                    ui.label(RichText::new(format!("… {} more lines …", actual_count - max_preview)).italics().color(theme.text_muted));
-                    for &line_idx in visible_in_range.iter().rev().take(max_preview / 2).rev() {
-                        let job = line_job(&tab.doc, &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()), line_idx, false, font_id.clone(), theme);
-                        ui.add(egui::Label::new(job));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(180.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for &line_idx in visible_in_range.iter().take(max_preview / 2) {
+                            let job = line_job(
+                                &tab.doc,
+                                &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()),
+                                line_idx,
+                                false,
+                                font_id.clone(),
+                                theme,
+                            );
+                            ui.add(egui::Label::new(job));
+                        }
+                        ui.label(
+                            RichText::new(format!("… {} more lines …", actual_count - max_preview))
+                                .italics()
+                                .color(theme.text_muted),
+                        );
+                        for &line_idx in visible_in_range.iter().rev().take(max_preview / 2).rev() {
+                            let job = line_job(
+                                &tab.doc,
+                                &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()),
+                                line_idx,
+                                false,
+                                font_id.clone(),
+                                theme,
+                            );
+                            ui.add(egui::Label::new(job));
+                        }
+                    });
             } else {
-                egui::ScrollArea::vertical().max_height(180.0).auto_shrink([false, false]).show(ui, |ui| {
-                    for &line_idx in &visible_in_range {
-                        let job = line_job(&tab.doc, &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()), line_idx, false, font_id.clone(), theme);
-                        ui.add(egui::Label::new(job));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(180.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for &line_idx in &visible_in_range {
+                            let job = line_job(
+                                &tab.doc,
+                                &Highlights::filters_only(&tab.filters, tab.highlighter.as_deref()),
+                                line_idx,
+                                false,
+                                font_id.clone(),
+                                theme,
+                            );
+                            ui.add(egui::Label::new(job));
+                        }
+                    });
             }
 
             ui.separator();
@@ -467,7 +538,8 @@ fn save_pin(tab: &mut LogTab, range: (usize, usize)) {
     // When visible_lines is active (filtered view), only include lines that
     // are actually visible, since the user's selection spans virtual indices.
     let line_numbers: Vec<usize> = match &tab.visible_lines {
-        Some(vis) => vis.iter()
+        Some(vis) => vis
+            .iter()
             .filter(|&&ln| ln >= start && ln <= end)
             .copied()
             .collect(),
@@ -509,13 +581,25 @@ fn save_pin(tab: &mut LogTab, range: (usize, usize)) {
 /// Font-size buttons, trim indicator, and "lines visible" label.
 fn show_toolbar(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme, _max_visible_lines: usize) {
     ui.horizontal(|ui| {
-        if ui.button("A-").on_hover_text("Decrease text size").clicked() {
+        if ui
+            .button("A-")
+            .on_hover_text("Decrease text size")
+            .clicked()
+        {
             tab.log_font_size = (tab.log_font_size - 1.0).max(8.0);
         }
-        if ui.button("A+").on_hover_text("Increase text size").clicked() {
+        if ui
+            .button("A+")
+            .on_hover_text("Increase text size")
+            .clicked()
+        {
             tab.log_font_size = (tab.log_font_size + 1.0).min(24.0);
         }
-        ui.label(RichText::new(format!("{:.0}px", tab.log_font_size)).monospace().color(theme.text_muted));
+        ui.label(
+            RichText::new(format!("{:.0}px", tab.log_font_size))
+                .monospace()
+                .color(theme.text_muted),
+        );
         ui.add_space(8.0);
 
         // Trim indicator + reset button
@@ -524,12 +608,20 @@ fn show_toolbar(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme, _max_visible
             let current = tab.doc.total_lines();
             let ctx = ui.ctx().clone();
             ui.add(icons::icon_image(&ctx, Icon::Trim, 12.0, theme.warning));
-            ui.label(RichText::new(format!("{} / {} lines", current, total)).color(theme.warning).size(11.0));
-            if ui.button("Reset").on_hover_text("Reset trim to show all lines").clicked() {
+            ui.label(
+                RichText::new(format!("{} / {} lines", current, total))
+                    .color(theme.warning)
+                    .size(11.0),
+            );
+            if ui
+                .button("Reset")
+                .on_hover_text("Reset trim to show all lines")
+                .clicked()
+            {
                 tab.handle_trim_reset();
             }
         }
-        
+
         show_line_count(ui, tab, theme);
 
         // Search controls sit left-aligned, right after the status text, separated
@@ -545,11 +637,56 @@ fn show_search_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     let search_active = !tab.find_query.is_empty();
 
     ui.horizontal(|ui| {
-        let input_resp = ui.add(
-            egui::TextEdit::singleline(&mut tab.find_input)
-                .hint_text("search log + Enter")
-                .desired_width(200.0),
-        );
+        let output = egui::TextEdit::singleline(&mut tab.find_input)
+            .id(egui::Id::new("log_find_input"))
+            .hint_text("search log + Enter")
+            .desired_width(200.0)
+            .show(ui);
+        let resp_id = output.response.id;
+        let input_resp = output.response;
+
+        // Cmd/Ctrl+F focus: select the existing text and park the caret at the
+        // end, so typing replaces the selection and Left-arrow collapses it to
+        // append/extend the current query.
+        if std::mem::take(&mut tab.search_focus_requested) {
+            input_resp.request_focus();
+            let len = tab.find_input.chars().count();
+            if len > 0 {
+                let range = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(len),
+                );
+                let mut state = output.state;
+                state.cursor.set_char_range(Some(range));
+                state.store(ui.ctx(), resp_id);
+            }
+        }
+
+        // Short 0.5s highlight "pulse" on the search box border when it gained
+        // focus via Cmd/Ctrl+F.
+        if let Some(at) = tab.search_focus_anim {
+            let duration = Duration::from_millis(500);
+            let elapsed = at.elapsed();
+            if elapsed < duration {
+                let t = elapsed.as_secs_f32() / duration.as_secs_f32();
+                let alpha = ((1.0 - t) * 150.0) as u8;
+                let color = Color32::from_rgba_unmultiplied(
+                    theme.accent.r(),
+                    theme.accent.g(),
+                    theme.accent.b(),
+                    alpha,
+                );
+                ui.painter().rect_stroke(
+                    input_resp.rect.expand(1.0),
+                    egui::CornerRadius::same(4),
+                    Stroke::new(1.5_f32, color),
+                    StrokeKind::Middle,
+                );
+                ui.ctx().request_repaint();
+            } else {
+                tab.search_focus_anim = None;
+            }
+        }
 
         if input_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             let trimmed = tab.find_input.trim();
@@ -564,31 +701,82 @@ fn show_search_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
 
         if !tab.find_matches.is_empty() {
             let pos = tab.find_pos.unwrap_or(0);
-            ui.label(RichText::new(format!("{} / {}", pos + 1, tab.find_matches.len())).size(11.0).color(theme.text_muted));
+            ui.label(
+                RichText::new(format!("{} / {}", pos + 1, tab.find_matches.len()))
+                    .size(11.0)
+                    .color(theme.text_muted),
+            );
         } else if search_active {
             ui.label(RichText::new("no matches").size(11.0).color(theme.warning));
         }
 
-        if ui.add_enabled(!tab.find_matches.is_empty(), icons::icon_image(ui.ctx(), Icon::ArrowUp, 13.0, theme.text).sense(egui::Sense::click()))
+        let has_matches = !tab.find_matches.is_empty();
+        let nav_color = if has_matches {
+            theme.text
+        } else {
+            theme.text_muted
+        };
+        if ui
+            .add_enabled(
+                has_matches,
+                egui::Button::new(icons::icon_image(ui.ctx(), Icon::ArrowUp, 13.0, nav_color)),
+            )
             .on_hover_text("Previous match")
             .clicked()
         {
             tab.find_prev();
         }
 
-        if ui.add_enabled(!tab.find_matches.is_empty(), icons::icon_image(ui.ctx(), Icon::ArrowDown, 13.0, theme.text).sense(egui::Sense::click()))
+        if ui
+            .add_enabled(
+                has_matches,
+                egui::Button::new(icons::icon_image(
+                    ui.ctx(),
+                    Icon::ArrowDown,
+                    13.0,
+                    nav_color,
+                )),
+            )
             .on_hover_text("Next match")
             .clicked()
         {
             tab.find_next();
         }
 
-        if ui.add(icons::icon_image(ui.ctx(), Icon::Close, 13.0, theme.text).sense(egui::Sense::click()))
+        if ui
+            .add(egui::Button::new(icons::icon_image(
+                ui.ctx(),
+                Icon::Close,
+                13.0,
+                theme.text,
+            )))
             .on_hover_text("Clear search")
             .clicked()
         {
             tab.clear_find();
             tab.find_input.clear();
+        }
+
+        // Once a search completes, offer to promote it into a timeline filter —
+        // but only if the searched text isn't already one of the filters.
+        let can_add_filter = !tab.find_query.is_empty()
+            && !tab.find_matches.is_empty()
+            && tab.filters.len() < MAX_FILTERS
+            && !tab.filters.iter().any(|f| f.text == tab.find_query);
+        if can_add_filter {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Add Filter").strong().size(12.0))
+                        .fill(theme.accent)
+                        .corner_radius(4.0),
+                )
+                .on_hover_text(format!("Add '{}' as a timeline filter", tab.find_query))
+                .clicked()
+            {
+                let color = theme.filter_colors[tab.filters.len() % theme.filter_colors.len()];
+                let query = tab.find_query.clone();
+                tab.push_filter(&query, color);
+            }
         }
 
         if tab.find_rx.is_some() {
@@ -635,12 +823,15 @@ fn keyword_at(text: &str, char_idx: usize) -> Option<String> {
 }
 
 fn is_word_delimiter(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '-' | '[' | ']' | '{' | '}' | '(' | ')' | ',' | '"' | '\'')
+    c.is_whitespace()
+        || matches!(
+            c,
+            '-' | '[' | ']' | '{' | '}' | '(' | ')' | ',' | '"' | '\''
+        )
 }
 
 /// Display total and filtered line counts.
 fn show_line_count(ui: &mut egui::Ui, tab: &LogTab, theme: &Theme) {
-    
     let total_lines = tab.doc.total_lines();
     if let Some(visible) = &tab.visible_lines {
         ui.label(
@@ -649,7 +840,11 @@ fn show_line_count(ui: &mut egui::Ui, tab: &LogTab, theme: &Theme) {
                 .color(theme.text_muted),
         );
     } else {
-        ui.label(RichText::new(format!("{} lines", total_lines)).small().color(theme.text_muted));
+        ui.label(
+            RichText::new(format!("{} lines", total_lines))
+                .small()
+                .color(theme.text_muted),
+        );
     }
 }
 
@@ -704,8 +899,11 @@ fn row_under_pointer(
     visible_lines: &Option<Vec<usize>>,
 ) -> Option<usize> {
     let pointer = ui.input(|i| i.pointer.latest_pos())?;
-    if pointer.x < inner_rect.left() || pointer.x > inner_rect.right()
-        || pointer.y < inner_rect.top() || pointer.y > inner_rect.bottom() {
+    if pointer.x < inner_rect.left()
+        || pointer.x > inner_rect.right()
+        || pointer.y < inner_rect.top()
+        || pointer.y > inner_rect.bottom()
+    {
         return None;
     }
     let relative_y = pointer.y - inner_rect.top() + scroll_offset;
@@ -718,8 +916,8 @@ fn row_under_pointer(
 }
 
 /// Render a single log row, returning an action to be applied by the caller.
-/// The line number is shown as a separate non-interactive label (not selectable
-/// during drag), followed by the log content with filter highlighting.
+/// The line number is shown as a separate non-interactive label, followed by
+/// selectable log content with filter highlighting.
 fn render_row(
     ui: &mut egui::Ui,
     doc: &LogDocument,
@@ -746,76 +944,92 @@ fn render_row(
     // Build the log content job (no line number, no color marker).
     let job = line_job(doc, highlights, idx, selected, font_id.clone(), theme);
 
-    // Use a horizontal layout: line number (non-interactive, not selectable) + log content (clickable).
-    ui
-        .allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), row_height),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                // Line number label — non-interactive, not selectable during drag.
-                let line_num_fmt = egui::text::TextFormat {
-                    font_id: font_id.clone(),
-                    color: theme.gutter,
-                    background: bg,
-                    ..Default::default()
-                };
-                let mut line_num_job = egui::text::LayoutJob::default();
-                line_num_job.append(&format!("{:>7}: ", idx + 1), 0.0, line_num_fmt);
-                ui.add(egui::Label::new(line_num_job).selectable(false));
+    // Use a horizontal layout: line number (non-interactive) + selectable log content.
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), row_height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            // Line number label — non-interactive, not selectable during drag.
+            let line_num_fmt = egui::text::TextFormat {
+                font_id: font_id.clone(),
+                color: theme.gutter,
+                background: bg,
+                ..Default::default()
+            };
+            let mut line_num_job = egui::text::LayoutJob::default();
+            line_num_job.append(&format!("{:>7}: ", idx + 1), 0.0, line_num_fmt);
+            ui.add(egui::Label::new(line_num_job).selectable(false));
 
-                // Log content label — clickable for selection. `line_job` already
-                // bakes the correct per-section background (selection tint on
-                // non-highlighted spans, search/keyword highlight colours on
-                // matches); do NOT overwrite it, or highlights are erased.
-                let content_job = job;
-                let content_resp = ui.add(
-                    egui::Label::new(content_job)
-                        .selectable(false)
-                        .sense(egui::Sense::click()),
-                );
+            // Log content label — selectable and clickable for row actions. `line_job` already
+            // bakes the correct per-section background (selection tint on
+            // non-highlighted spans, search/keyword highlight colours on
+            // matches); do NOT overwrite it, or highlights are erased.
+            let content_job = job;
+            let content_resp = ui.add(log_content_label(content_job));
 
-                // Double-click: keyword highlight
-                if content_resp.double_clicked() {
-                    let rel_x = ui.input(|i| i.pointer.latest_pos()).map(|p| p.x - content_resp.rect.left()).unwrap_or(0.0);
-                    let ci = (rel_x / char_width).max(0.0) as usize;
-                    if let Some(kw) = keyword_at(&doc.line(idx), ci) {
-                        action = Some(RowAction::Keyword(kw));
-                    }
-                } else if content_resp.clicked() {
-                    action = Some(RowAction::Select);
+            // Double-click: keyword highlight
+            if content_resp.double_clicked() {
+                let rel_x = ui
+                    .input(|i| i.pointer.latest_pos())
+                    .map(|p| p.x - content_resp.rect.left())
+                    .unwrap_or(0.0);
+                let ci = (rel_x / char_width).max(0.0) as usize;
+                if let Some(kw) = keyword_at(&doc.line(idx), ci) {
+                    action = Some(RowAction::Keyword(kw));
                 }
+            } else if content_resp.clicked() {
+                action = Some(RowAction::Select);
+            }
 
-                // Right-click: context menu (on the whole row area)
-                content_resp.context_menu(|ui| {
-                    ui.set_min_width(160.0);
-                        if ui.button("Pin").clicked() {
-                            action = Some(RowAction::Pin);
-                            ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Trim top").on_hover_text("Remove all lines before this one").clicked() {
-                        action = Some(RowAction::TrimLeft);
-                        ui.close();
-                    }
-                    if ui.button("Trim bottom").on_hover_text("Remove all lines after this one").clicked() {
-                        action = Some(RowAction::TrimRight);
-                        ui.close();
-                    }
-                });
-
-                if content_resp.hovered() {
-                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+            // Right-click: context menu (on the whole row area)
+            content_resp.context_menu(|ui| {
+                ui.set_min_width(160.0);
+                if ui.button("Pin").clicked() {
+                    action = Some(RowAction::Pin);
+                    ui.close();
                 }
-            },
-        )
-        .inner;
+                ui.separator();
+                if ui
+                    .button("Trim top")
+                    .on_hover_text("Remove all lines before this one")
+                    .clicked()
+                {
+                    action = Some(RowAction::TrimLeft);
+                    ui.close();
+                }
+                if ui
+                    .button("Trim bottom")
+                    .on_hover_text("Remove all lines after this one")
+                    .clicked()
+                {
+                    action = Some(RowAction::TrimRight);
+                    ui.close();
+                }
+            });
+
+            if content_resp.hovered() {
+                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Text);
+            }
+        },
+    )
+    .inner;
 
     action
 }
 
+/// Keep native egui text selection enabled for log content. Whole-line drag
+/// selection remains handled by `show` for pinning selected rows.
+fn log_content_label(job: egui::text::LayoutJob) -> egui::Label {
+    egui::Label::new(job).selectable(true)
+}
+
 /// Apply the deferred pin / trim actions from the context menu.
 /// Single-line right-click "📌 Pin" opens the pin modal.
-fn apply_context_actions(tab: &mut LogTab, context_pin: Option<usize>, context_trim: Option<TrimAction>) {
+fn apply_context_actions(
+    tab: &mut LogTab,
+    context_pin: Option<usize>,
+    context_trim: Option<TrimAction>,
+) {
     if let Some(line) = context_pin {
         tab.pin_modal = Some((line, line));
         tab.pin_comment.clear();
@@ -976,12 +1190,12 @@ pub fn line_job(
 
     let line = doc.line(idx);
     /*
-    // For debug purpose 
+    // For debug purpose
     job.append(
         &format!("T{:<3} ", doc.template_at(idx)),
         0.0,
         fmt(theme.template_id),
-        
+
     );
     */
 
@@ -998,12 +1212,26 @@ pub fn line_job(
     };
 
     let base = theme.log_text;
-    match (highlights.filter_ac, highlights.search_ac, highlights.keyword_ac) {
+    match (
+        highlights.filter_ac,
+        highlights.search_ac,
+        highlights.keyword_ac,
+    ) {
         (None, None, None) => {
             job.append(text, 0.0, fmt(base));
         }
         (filter_ac, search_ac, keyword_ac) => {
-            append_highlighted(&mut job, text, filter_ac, search_ac, keyword_ac, highlights.filters, fmt(base), font_id, theme);
+            append_highlighted(
+                &mut job,
+                text,
+                filter_ac,
+                search_ac,
+                keyword_ac,
+                highlights.filters,
+                fmt(base),
+                font_id,
+                theme,
+            );
         }
     }
     job
@@ -1079,16 +1307,9 @@ fn append_highlighted(
         if let Some(seg) = text.get(pos..end) {
             match cur {
                 Some(Hl::Filter(kw)) => {
-                    let color = filters
-                        .get(kw)
-                        .map(|k| k.color)
-                        .unwrap_or(Color32::YELLOW);
-                    let bg_alpha = Color32::from_rgba_unmultiplied(
-                        color.r(),
-                        color.g(),
-                        color.b(),
-                        51,
-                    );
+                    let color = filters.get(kw).map(|k| k.color).unwrap_or(Color32::YELLOW);
+                    let bg_alpha =
+                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 51);
                     job.append(
                         seg,
                         0.0,
@@ -1207,12 +1428,27 @@ mod tests {
 
     #[test]
     fn keyword_at_bracketed_token() {
-        assert_eq!(keyword_at("[LogEntry] foo", 1), Some("LogEntry".to_string()));
+        assert_eq!(
+            keyword_at("[LogEntry] foo", 1),
+            Some("LogEntry".to_string())
+        );
     }
 
     #[test]
     fn keyword_at_past_eol_returns_none() {
         assert_eq!(keyword_at("hi", 5), None);
+    }
+
+    #[test]
+    fn log_content_label_supports_native_text_drag_selection() {
+        egui::__run_test_ui(|ui| {
+            let response = ui.add(log_content_label(egui::text::LayoutJob::single_section(
+                "select me".to_owned(),
+                egui::text::TextFormat::default(),
+            )));
+            assert!(response.sense.senses_drag());
+            assert!(response.sense.senses_click());
+        });
     }
 
     #[test]

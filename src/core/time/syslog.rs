@@ -8,9 +8,8 @@ use regex::Regex;
 
 use super::{window, TimeFormat};
 
-static RE_SYSLOG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Z][a-z]{2}\s{1,2}\d{1,2}\s\d{2}:\d{2}:\d{2}").unwrap()
-});
+static RE_SYSLOG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Z][a-z]{2}\s{1,2}\d{1,2}\s\d{2}:\d{2}:\d{2}").unwrap());
 
 /// BSD syslog `Jan  5 10:00:00` timestamps (yearless).
 pub struct Syslog;
@@ -65,11 +64,9 @@ mod tests {
         // Mirror parse_syslog's year rollback so the test is deterministic
         // even when run in the first days of January.
         let mut year = Local::now().year();
-        let parsed = NaiveDateTime::parse_from_str(
-            &format!("{year} Jan  5 03:22:11"),
-            "%Y %b %e %H:%M:%S",
-        )
-        .unwrap();
+        let parsed =
+            NaiveDateTime::parse_from_str(&format!("{year} Jan  5 03:22:11"), "%Y %b %e %H:%M:%S")
+                .unwrap();
         if parsed.and_utc().timestamp() > Local::now().timestamp() + 86_400 {
             year -= 1;
         }

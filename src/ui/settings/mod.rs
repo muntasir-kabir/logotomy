@@ -1,2 +1,2 @@
 pub mod view;
-pub use view::{show_settings_popup, show_integrate_popup};
+pub use view::{show_integrate_popup, show_settings_popup};

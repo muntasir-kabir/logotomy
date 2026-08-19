@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::time::CustomDateFormat;
+
 /// Maximum number of recent files to remember.
 const MAX_RECENT: usize = 20;
 
@@ -77,6 +79,47 @@ impl Settings {
     /// Path to the logs directory (`~/.logotomy/logs/`).
     pub fn log_dir() -> PathBuf {
         Self::home_dir().join("logs")
+    }
+
+    /// Path to the user-defined date-format list (`~/.logotomy/custom_date_format_list.json`).
+    pub fn custom_date_formats_path() -> PathBuf {
+        Self::home_dir().join("custom_date_format_list.json")
+    }
+
+    /// Load the user-defined custom date formats (empty list if missing/unparsable).
+    pub fn load_custom_date_formats() -> Vec<CustomDateFormat> {
+        let path = Self::custom_date_formats_path();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!(
+                        "failed to parse custom date formats ({}), using none: {e}",
+                        path.display()
+                    );
+                    Vec::new()
+                }
+            },
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Persist the user-defined custom date formats to disk.
+    pub fn save_custom_date_formats(formats: &[CustomDateFormat]) {
+        let dir = Self::home_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            log::error!("failed to create config dir ({}): {e}", dir.display());
+            return;
+        }
+        let path = Self::custom_date_formats_path();
+        match serde_json::to_string_pretty(formats) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&path, &text) {
+                    log::error!("failed to write custom date formats ({}): {e}", path.display());
+                }
+            }
+            Err(e) => log::error!("failed to serialize custom date formats: {e}"),
+        }
     }
 
     /// Load settings from disk, or return defaults if the file doesn't exist

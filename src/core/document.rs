@@ -24,7 +24,7 @@ use memmap2::Mmap;
 use crate::core::drain::Drain;
 use crate::core::format::{learn_header_slots, FormatContext, FormatDetector, LogFormat};
 use crate::core::masking::{LogMasker, MaskCache};
-use crate::core::time::TimeFormat;
+use crate::core::time::{CustomTimeFormat, TimeFormatKind};
 
 /// Tunables for the log-parsing pipeline (template mining + header learning).
 #[derive(Clone, Copy, Debug)]
@@ -75,7 +75,11 @@ impl LoadStage {
 }
 
 pub enum LoadProgress {
-    Progress { stage: LoadStage, done: u64, total: u64 },
+    Progress {
+        stage: LoadStage,
+        done: u64,
+        total: u64,
+    },
     Done(Box<LogDocument>),
     Error(String),
 }
@@ -121,7 +125,7 @@ pub struct LogDocument {
     /// Detected log format (drives per-line normalization).
     log_format: &'static dyn LogFormat,
     /// Detected timestamp family for this format (`None` when timeless).
-    time_format: Option<&'static dyn TimeFormat>,
+    time_format: Option<TimeFormatKind>,
     /// Mined templates, ordered by cluster ID.
     pub templates: Vec<TemplateInfo>,
     /// (min, max) extracted timestamp in the file, if any.
@@ -186,8 +190,8 @@ impl LogDocument {
     }
 
     /// Name of the detected timestamp family, if any ("none" when timeless).
-    pub fn time_format_name(&self) -> Option<&'static str> {
-        self.time_format.map(|f| f.name())
+    pub fn time_format_name(&self) -> Option<String> {
+        self.time_format.as_ref().map(|f| f.name())
     }
 
     /// Access a line by its original (untrimmed) index.
@@ -269,7 +273,11 @@ impl LogDocument {
                 max_ts = max_ts.max(t);
             }
         }
-        self.time_range = if min_ts <= max_ts { Some((min_ts, max_ts)) } else { None };
+        self.time_range = if min_ts <= max_ts {
+            Some((min_ts, max_ts))
+        } else {
+            None
+        };
 
         // Recalculate template counts for the trimmed view.
         self.recalculate_template_counts();
@@ -291,10 +299,13 @@ impl LogDocument {
     /// Checks for appended data and incrementally loads it.
     /// Returns `Ok(true)` if new data was loaded, `Ok(false)` if no change.
     pub fn append_new_data(&mut self) -> Result<bool, String> {
-        let new_meta = self.file_handle.metadata()
+        let new_meta = self
+            .file_handle
+            .metadata()
             .map_err(|e| format!("failed to get file metadata: {e}"))?;
         let new_size = new_meta.len();
-        let new_mtime = new_meta.modified()
+        let new_mtime = new_meta
+            .modified()
             .map_err(|e| format!("failed to get file modification time: {e}"))?;
 
         // Detect shrink or in-place modification (same size, different mtime).
@@ -309,7 +320,12 @@ impl LogDocument {
         }
 
         // --- File has grown, load new data ---
-        log::info!("File '{}' has grown from {} to {} bytes. Appending new data.", self.file_name, self.file_size, new_size);
+        log::info!(
+            "File '{}' has grown from {} to {} bytes. Appending new data.",
+            self.file_name,
+            self.file_size,
+            new_size
+        );
 
         let old_file_size = self.file_size as usize;
         let old_line_count = self.total_lines_untrimmed();
@@ -343,9 +359,16 @@ impl LogDocument {
 
         // Update templates from the modified Drain instance
         let drain = self.drain.lock().unwrap();
-        self.templates = drain.clusters.iter().map(|c| TemplateInfo {
-            id: c.id, pattern: c.pattern(), count: c.size, example_line: c.example_line
-        }).collect();
+        self.templates = drain
+            .clusters
+            .iter()
+            .map(|c| TemplateInfo {
+                id: c.id,
+                pattern: c.pattern(),
+                count: c.size,
+                example_line: c.example_line,
+            })
+            .collect();
 
         // Update document state
         self.file_size = new_size;
@@ -364,8 +387,18 @@ impl LogDocument {
 
     /// Blocking load with explicit parsing tunables.
     pub fn open_with_config(path: &Path, config: ParsingConfig) -> Result<Self, String> {
+        Self::open_with_custom(path, config, &[])
+    }
+
+    /// Blocking load with explicit parsing tunables plus user-defined custom
+    /// date recognizers to consider alongside the built-in families.
+    pub fn open_with_custom(
+        path: &Path,
+        config: ParsingConfig,
+        custom: &[CustomTimeFormat],
+    ) -> Result<Self, String> {
         let (tx, _rx) = crossbeam_channel::unbounded();
-        Self::load_inner(path, &tx, &AtomicBool::new(false), config)
+        Self::load_inner(path, &tx, &AtomicBool::new(false), config, custom)
     }
 
     /// Load on a background thread with progress reporting and cancellation.
@@ -374,8 +407,24 @@ impl LogDocument {
     }
 
     /// Background load with explicit parsing tunables.
-    pub fn load_with_config(path: &Path, config: ParsingConfig, tx: Sender<LoadProgress>, cancel: Arc<AtomicBool>) {
-        match Self::load_inner(path, &tx, &cancel, config) {
+    pub fn load_with_config(
+        path: &Path,
+        config: ParsingConfig,
+        tx: Sender<LoadProgress>,
+        cancel: Arc<AtomicBool>,
+    ) {
+        Self::load_with_custom(path, config, &[], tx, cancel)
+    }
+
+    /// Background load with explicit tunables plus custom date formats.
+    pub fn load_with_custom(
+        path: &Path,
+        config: ParsingConfig,
+        custom: &[CustomTimeFormat],
+        tx: Sender<LoadProgress>,
+        cancel: Arc<AtomicBool>,
+    ) {
+        match Self::load_inner(path, &tx, &cancel, config, custom) {
             Ok(doc) => {
                 let _ = tx.send(LoadProgress::Done(Box::new(doc)));
             }
@@ -393,10 +442,18 @@ impl LogDocument {
         tx: &Sender<LoadProgress>,
         cancel: &AtomicBool,
     ) -> Result<(), String> {
-        let mut last_ts = if start_line > 0 { self.ts_ff[start_line - 1] } else { -1 };
+        let mut last_ts = if start_line > 0 {
+            self.ts_ff[start_line - 1]
+        } else {
+            -1
+        };
         let mut min_ts = self.time_range.map_or(i64::MAX, |(min, _)| min);
         let mut max_ts = self.time_range.map_or(i64::MIN, |(_, max)| max);
-        let mut last_report = if start_line > 0 { self.line_offsets[start_line] } else { 0 };
+        let mut last_report = if start_line > 0 {
+            self.line_offsets[start_line]
+        } else {
+            0
+        };
 
         let mut drain = self.drain.lock().unwrap();
         // Take the cache out of self so the per-line borrows don't conflict;
@@ -406,7 +463,7 @@ impl LogDocument {
         let masker = self.masker.clone();
         let header_slots = self.header_slots.clone();
         let log_format = self.log_format;
-        let time_format = self.time_format;
+        let time_format = self.time_format.clone();
 
         for i in start_line..end_line {
             if i % 65_536 == 0 {
@@ -415,7 +472,12 @@ impl LogDocument {
                 }
                 if self.line_offsets[i] - last_report >= PROGRESS_STRIDE {
                     last_report = self.line_offsets[i];
-                    report(tx, LoadStage::Analyzing, self.line_offsets[i], self.file_size);
+                    report(
+                        tx,
+                        LoadStage::Analyzing,
+                        self.line_offsets[i],
+                        self.file_size,
+                    );
                 }
             }
 
@@ -453,7 +515,11 @@ impl LogDocument {
         }
 
         self.mask_cache = mask_cache;
-        self.time_range = if min_ts <= max_ts { Some((min_ts, max_ts)) } else { self.time_range };
+        self.time_range = if min_ts <= max_ts {
+            Some((min_ts, max_ts))
+        } else {
+            self.time_range
+        };
         Ok(())
     }
 
@@ -462,9 +528,9 @@ impl LogDocument {
         tx: &Sender<LoadProgress>,
         cancel: &AtomicBool,
         config: ParsingConfig,
+        custom: &[CustomTimeFormat],
     ) -> Result<Self, String> {
-        let file = File::open(path)
-            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        let file = File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
 
         // On Windows: LockFile is mandatory, so a shared lock would block log writers
         // from appending to the file, breaking live tailing entirely.  The mmap itself
@@ -475,9 +541,11 @@ impl LogDocument {
         file.try_lock_shared()
             .map_err(|e| format!("failed to acquire shared lock on {}: {e}. Is another process holding an exclusive lock?", path.display()))?;
 
-        let metadata = file.metadata()
+        let metadata = file
+            .metadata()
             .map_err(|e| format!("cannot get file metadata: {e}"))?;
-        let mtime = metadata.modified()
+        let mtime = metadata
+            .modified()
             .map_err(|e| format!("cannot get file modification time: {e}"))?;
 
         let file_arc = Arc::new(file);
@@ -519,8 +587,11 @@ impl LogDocument {
             .take(512)
             .collect();
         let log_format = FormatDetector::detect(sample.iter().map(|l| l.as_ref()));
-        let time_format =
-            FormatDetector::detect_time(sample.iter().map(|l| l.as_ref()), log_format);
+        let time_format = FormatDetector::detect_time_custom(
+            sample.iter().map(|l| l.as_ref()),
+            log_format,
+            custom,
+        );
 
         // ---- Learn the common header shape from a sample of leading lines ----
         // (plain format only) — for each leading token position, if most
@@ -558,7 +629,9 @@ impl LogDocument {
             "{}: format={} time_format={} header_slots={:?} (sampled {} lines)",
             file_name,
             log_format.name(),
-            time_format.map(|f| f.name()).unwrap_or("none"),
+            time_format
+                .as_ref()
+                .map_or("none".to_string(), |f| f.name()),
             header_slots,
             config.header_sample_lines
         );
@@ -573,7 +646,12 @@ impl LogDocument {
             ts_ff: Vec::with_capacity(n_lines),
             ts_spans: Vec::with_capacity(n_lines),
             template_ids: Vec::with_capacity(n_lines),
-            drain: Arc::new(Mutex::new(Drain::new(config.drain_depth, config.sim_threshold, 100, 20_000))),
+            drain: Arc::new(Mutex::new(Drain::new(
+                config.drain_depth,
+                config.sim_threshold,
+                100,
+                20_000,
+            ))),
             masker: LogMasker::default(),
             header_slots,
             mask_cache: MaskCache::default(),
@@ -593,9 +671,16 @@ impl LogDocument {
 
         {
             let drain = doc.drain.lock().unwrap();
-            doc.templates = drain.clusters.iter().map(|c| TemplateInfo {
-                id: c.id, pattern: c.pattern(), count: c.size, example_line: c.example_line
-            }).collect();
+            doc.templates = drain
+                .clusters
+                .iter()
+                .map(|c| TemplateInfo {
+                    id: c.id,
+                    pattern: c.pattern(),
+                    count: c.size,
+                    example_line: c.example_line,
+                })
+                .collect();
         }
 
         Ok(doc)
@@ -609,8 +694,8 @@ fn report(tx: &Sender<LoadProgress>, stage: LoadStage, done: u64, total: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
     use std::io::Write;
+    use std::thread;
 
     fn write_temp(content: &str) -> PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -644,14 +729,18 @@ mod tests {
         assert_eq!(doc.total_lines(), 10_000);
         assert!(doc.time_range.is_some());
         assert!(doc.templates.len() >= 2); // at least the mined one + <EMPTY>
-        // The template pattern should preserve the structural tokens
-        // (INFO, request, status) while masking dynamic values.
-        // The `worker-0` prefix is masked as `<NUM>` via header slot detection.
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("request")),
+                                           // The template pattern should preserve the structural tokens
+                                           // (INFO, request, status) while masking dynamic values.
+                                           // The `worker-0` prefix is masked as `<NUM>` via header slot detection.
+        assert!(
+            doc.templates.iter().any(|t| t.pattern.contains("request")),
             "template should contain 'request', got patterns: {:?}",
-            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("status")),
-            "template should contain 'status'");
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
+        assert!(
+            doc.templates.iter().any(|t| t.pattern.contains("status")),
+            "template should contain 'status'"
+        );
         let line = doc.line(42);
         assert!(line.contains("id=42"));
         std::fs::remove_file(path).ok();
@@ -788,17 +877,52 @@ mod tests {
         let mut doc = LogDocument::open(&path).unwrap();
         let error_template_id = doc.template_ids[0];
         let info_template_id = doc.template_ids[1];
-        assert_eq!(doc.templates.iter().find(|t| t.id == error_template_id).unwrap().count, 2);
-        assert_eq!(doc.templates.iter().find(|t| t.id == info_template_id).unwrap().count, 1);
+        assert_eq!(
+            doc.templates
+                .iter()
+                .find(|t| t.id == error_template_id)
+                .unwrap()
+                .count,
+            2
+        );
+        assert_eq!(
+            doc.templates
+                .iter()
+                .find(|t| t.id == info_template_id)
+                .unwrap()
+                .count,
+            1
+        );
 
         doc.trim_right(0); // keep only line 0
         assert_eq!(doc.total_lines(), 1);
 
         // Template counts should be recalculated for the trimmed view.
-        assert_eq!(doc.templates.iter().find(|t| t.id == error_template_id).unwrap().count, 1);
-        assert_eq!(doc.templates.iter().find(|t| t.id == info_template_id).unwrap().count, 0);
+        assert_eq!(
+            doc.templates
+                .iter()
+                .find(|t| t.id == error_template_id)
+                .unwrap()
+                .count,
+            1
+        );
+        assert_eq!(
+            doc.templates
+                .iter()
+                .find(|t| t.id == info_template_id)
+                .unwrap()
+                .count,
+            0
+        );
         // The example_line should still reference the original line index.
-        assert_eq!(doc.templates.iter().find(|t| t.id == error_template_id).unwrap().example_line, 0);
+        assert_eq!(
+            doc.templates
+                .iter()
+                .find(|t| t.id == error_template_id)
+                .unwrap()
+                .example_line,
+            0
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -859,11 +983,19 @@ mod tests {
         doc.trim_range(1, 1); // keep only the INFO line
         assert_eq!(doc.total_lines(), 1);
         assert_eq!(
-            doc.templates.iter().find(|t| t.id == error_template_id).unwrap().count,
+            doc.templates
+                .iter()
+                .find(|t| t.id == error_template_id)
+                .unwrap()
+                .count,
             0
         );
         assert_eq!(
-            doc.templates.iter().find(|t| t.id == info_template_id).unwrap().count,
+            doc.templates
+                .iter()
+                .find(|t| t.id == info_template_id)
+                .unwrap()
+                .count,
             1
         );
         std::fs::remove_file(path).ok();
@@ -912,7 +1044,11 @@ mod tests {
         // which previously truncated the header scan at slot 1 — the
         // File.swift:N slot was never learned and Drain collapsed it to <*>.
         let levels = ["INFO", "DEBUG", "NOTICE", "WARNING", "ERROR", "FAULT"];
-        let files = ["AppDelegate.swift", "NetworkManager.swift", "LocationManager.swift"];
+        let files = [
+            "AppDelegate.swift",
+            "NetworkManager.swift",
+            "LocationManager.swift",
+        ];
         let pids = [12345i64, 91234, 45678];
         let (doc, path) = doc_from_lines(
             |i| {
@@ -933,17 +1069,37 @@ mod tests {
         );
         // Slot 0: process token (dynamic). Slot 1: level (closed set → None).
         // Slot 2: File.swift:N (dynamic).
-        assert!(doc.header_slots.len() >= 3,
-            "expected >=3 header slots, got {:?}", doc.header_slots);
+        assert!(
+            doc.header_slots.len() >= 3,
+            "expected >=3 header slots, got {:?}",
+            doc.header_slots
+        );
         assert_eq!(doc.header_slots[0], Some(crate::core::masking::MASK_NUM));
-        assert_eq!(doc.header_slots[1], None, "level is a closed set, not a mask slot");
-        assert_eq!(doc.header_slots[2], Some(crate::core::masking::MASK_NUM),
-            "File.swift:N slot must be learned, got {:?}", doc.header_slots);
+        assert_eq!(
+            doc.header_slots[1], None,
+            "level is a closed set, not a mask slot"
+        );
+        assert_eq!(
+            doc.header_slots[2],
+            Some(crate::core::masking::MASK_NUM),
+            "File.swift:N slot must be learned, got {:?}",
+            doc.header_slots
+        );
         // Shape-aware masking: templates keep the app name and file names.
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("MyApp[<NUM>:<NUM>]")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("AppDelegate.swift:<NUM>")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert!(
+            doc.templates
+                .iter()
+                .any(|t| t.pattern.contains("MyApp[<NUM>:<NUM>]")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
+        assert!(
+            doc.templates
+                .iter()
+                .any(|t| t.pattern.contains("AppDelegate.swift:<NUM>")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -973,10 +1129,22 @@ mod tests {
              {\"time\": \"2026-08-15T19:40:05Z\", \"lvl\": 20, \"msg\": \"API Latency\", \"endpoint\": \"/v1/user\", \"duration\": 45}\n",
         );
         assert_eq!(doc.format_name(), "json");
-        assert_eq!(doc.time_format_name(), None, "JSON time is field-based, not positional");
-        assert!(doc.time_range.is_some(), "JSON time field should populate the timeline");
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("lvl=<NUM>")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert_eq!(
+            doc.time_format_name(),
+            None,
+            "JSON time is field-based, not positional"
+        );
+        assert!(
+            doc.time_range.is_some(),
+            "JSON time field should populate the timeline"
+        );
+        assert!(
+            doc.templates
+                .iter()
+                .any(|t| t.pattern.contains("lvl=<NUM>")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -990,8 +1158,13 @@ mod tests {
         assert_eq!(doc.time_format_name(), None, "CEF is timeless");
         assert!(doc.time_range.is_none(), "CEF has no timestamps");
         // Same CEF signature → same template; spt values masked to <NUM>.
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("spt=<NUM>")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert!(
+            doc.templates
+                .iter()
+                .any(|t| t.pattern.contains("spt=<NUM>")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -1002,10 +1175,13 @@ mod tests {
              <134>1 2026-08-15T19:40:21.000Z srv-alpha auth-api 1201 tx_882 - Login failed for user bob\n",
         );
         assert_eq!(doc.format_name(), "rfc5424");
-        assert_eq!(doc.time_format_name(), Some("ISO-8601"));
+        assert_eq!(doc.time_format_name(), Some("ISO-8601".to_string()));
         assert!(doc.time_range.is_some());
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("RFC5424")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert!(
+            doc.templates.iter().any(|t| t.pattern.contains("RFC5424")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -1016,15 +1192,33 @@ mod tests {
              2026-08-15 19:40:31.123456+0300 0x1a2b3c Error 0x0 12345 2 com.app: Transitioning failed for user_id=43\n",
         );
         assert_eq!(doc.format_name(), "os_log");
-        assert_eq!(doc.time_format_name(), Some("ISO-8601"));
-        assert!(doc.time_range.is_some(), "ULS timestamps should populate the timeline");
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("OSLOG Default")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("OSLOG Error")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert_eq!(doc.time_format_name(), Some("ISO-8601".to_string()));
+        assert!(
+            doc.time_range.is_some(),
+            "ULS timestamps should populate the timeline"
+        );
+        assert!(
+            doc.templates
+                .iter()
+                .any(|t| t.pattern.contains("OSLOG Default")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
+        assert!(
+            doc.templates
+                .iter()
+                .any(|t| t.pattern.contains("OSLOG Error")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         // Thread/activity/PID columns should not leak into the template.
-        assert!(doc.templates.iter().all(|t| !t.pattern.contains("0x1a2b3c")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert!(
+            doc.templates
+                .iter()
+                .all(|t| !t.pattern.contains("0x1a2b3c")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -1047,15 +1241,24 @@ mod tests {
             2_000,
         );
         // Timestamps detected and stripped.
-        assert!(doc.time_range.is_some(), "logcat timestamps should be detected");
+        assert!(
+            doc.time_range.is_some(),
+            "logcat timestamps should be detected"
+        );
         // pid & tid slots learned as dynamic.
-        assert!(doc.header_slots.len() >= 2,
-            "expected >=2 header slots, got {:?}", doc.header_slots);
+        assert!(
+            doc.header_slots.len() >= 2,
+            "expected >=2 header slots, got {:?}",
+            doc.header_slots
+        );
         assert_eq!(doc.header_slots[0], Some(crate::core::masking::MASK_NUM));
         assert_eq!(doc.header_slots[1], Some(crate::core::masking::MASK_NUM));
         // Template keeps the structural tag.
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("MyTag")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert!(
+            doc.templates.iter().any(|t| t.pattern.contains("MyTag")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -1076,12 +1279,21 @@ mod tests {
             },
             2_000,
         );
-        assert!(doc.time_range.is_some(), "glog timestamps should be detected");
-        assert!(doc.header_slots.len() >= 2,
-            "expected >=2 header slots, got {:?}", doc.header_slots);
+        assert!(
+            doc.time_range.is_some(),
+            "glog timestamps should be detected"
+        );
+        assert!(
+            doc.header_slots.len() >= 2,
+            "expected >=2 header slots, got {:?}",
+            doc.header_slots
+        );
         assert_eq!(doc.header_slots[0], Some(crate::core::masking::MASK_NUM));
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("request")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert!(
+            doc.templates.iter().any(|t| t.pattern.contains("request")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -1101,14 +1313,23 @@ mod tests {
             },
             2_000,
         );
-        assert!(doc.time_range.is_some(), "nginx slash timestamps should be detected");
+        assert!(
+            doc.time_range.is_some(),
+            "nginx slash timestamps should be detected"
+        );
         // `[error]` is a constant slot; `pid#tid:` must be dynamic.
-        assert!(doc.header_slots.len() >= 2,
-            "expected >=2 header slots, got {:?}", doc.header_slots);
+        assert!(
+            doc.header_slots.len() >= 2,
+            "expected >=2 header slots, got {:?}",
+            doc.header_slots
+        );
         assert_eq!(doc.header_slots[0], None, "[error] should stay constant");
         assert_eq!(doc.header_slots[1], Some(crate::core::masking::MASK_NUM));
-        assert!(doc.templates.iter().any(|t| t.pattern.contains("upstream")),
-            "patterns: {:?}", doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>());
+        assert!(
+            doc.templates.iter().any(|t| t.pattern.contains("upstream")),
+            "patterns: {:?}",
+            doc.templates.iter().map(|t| &t.pattern).collect::<Vec<_>>()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -1130,9 +1351,15 @@ mod tests {
             },
             2_000,
         );
-        assert!(doc.time_range.is_some(), "ISO timestamps should be detected");
-        assert!(doc.header_slots.len() >= 2,
-            "expected >=2 header slots, got {:?}", doc.header_slots);
+        assert!(
+            doc.time_range.is_some(),
+            "ISO timestamps should be detected"
+        );
+        assert!(
+            doc.header_slots.len() >= 2,
+            "expected >=2 header slots, got {:?}",
+            doc.header_slots
+        );
         assert_eq!(doc.header_slots[0], None, "[INF] should stay constant");
         assert_eq!(doc.header_slots[1], Some(crate::core::masking::MASK_NUM));
         std::fs::remove_file(path).ok();
@@ -1155,9 +1382,15 @@ mod tests {
             },
             2_000,
         );
-        assert!(doc.time_range.is_some(), "ISO comma-millis timestamps should be detected");
-        assert!(doc.header_slots.len() >= 2,
-            "expected >=2 header slots, got {:?}", doc.header_slots);
+        assert!(
+            doc.time_range.is_some(),
+            "ISO comma-millis timestamps should be detected"
+        );
+        assert!(
+            doc.header_slots.len() >= 2,
+            "expected >=2 header slots, got {:?}",
+            doc.header_slots
+        );
         assert_eq!(doc.header_slots[0], None, "INFO should stay constant");
         assert_eq!(doc.header_slots[1], Some(crate::core::masking::MASK_NUM));
         std::fs::remove_file(path).ok();
@@ -1178,9 +1411,15 @@ mod tests {
             },
             2_000,
         );
-        assert!(doc.time_range.is_some(), "syslog timestamps should be detected");
-        assert!(doc.header_slots.len() >= 2,
-            "expected >=2 header slots, got {:?}", doc.header_slots);
+        assert!(
+            doc.time_range.is_some(),
+            "syslog timestamps should be detected"
+        );
+        assert!(
+            doc.header_slots.len() >= 2,
+            "expected >=2 header slots, got {:?}",
+            doc.header_slots
+        );
         assert_eq!(doc.header_slots[0], None, "hostname should stay constant");
         assert_eq!(doc.header_slots[1], Some(crate::core::masking::MASK_NUM));
         std::fs::remove_file(path).ok();
@@ -1206,8 +1445,11 @@ mod tests {
         }
         let path = write_temp(&content);
         let doc = LogDocument::open(&path).unwrap();
-        assert!(doc.header_slots.len() >= 2,
-            "expected >=2 header slots, got {:?}", doc.header_slots);
+        assert!(
+            doc.header_slots.len() >= 2,
+            "expected >=2 header slots, got {:?}",
+            doc.header_slots
+        );
         assert_eq!(doc.header_slots[1], Some(crate::core::masking::MASK_NUM));
         std::fs::remove_file(path).ok();
     }
@@ -1239,15 +1481,21 @@ mod tests {
         assert_ne!(doc.template_ids[0], doc.template_ids[3]);
 
         // The template pattern should contain semantic masks
-        let user_template = &doc.templates.iter()
+        let user_template = &doc
+            .templates
+            .iter()
             .find(|t| t.pattern.contains("User"))
             .expect("should have a User template")
             .pattern;
         assert!(user_template.contains("User"), "template: {user_template}");
-        assert!(user_template.contains("<HEX>") || user_template.contains("<*>"),
-            "template should mask hex IDs: {user_template}");
-        assert!(user_template.contains("<IP>") || user_template.contains("<*>"),
-            "template should mask IPs: {user_template}");
+        assert!(
+            user_template.contains("<HEX>") || user_template.contains("<*>"),
+            "template should mask hex IDs: {user_template}"
+        );
+        assert!(
+            user_template.contains("<IP>") || user_template.contains("<*>"),
+            "template should mask IPs: {user_template}"
+        );
 
         std::fs::remove_file(path).ok();
     }
@@ -1295,14 +1543,20 @@ mod tests {
         }
 
         // Verify the pattern is clean (no timestamp tokens in the template)
-        let info_template = &doc.templates.iter()
+        let info_template = &doc
+            .templates
+            .iter()
             .find(|t| t.pattern.contains("INFO"))
             .expect("should have an INFO template")
             .pattern;
-        assert!(!info_template.contains("2026"),
-            "template '{info_template}' should not contain timestamp literals");
-        assert!(info_template.contains("INFO request"),
-            "template should preserve log message: {info_template}");
+        assert!(
+            !info_template.contains("2026"),
+            "template '{info_template}' should not contain timestamp literals"
+        );
+        assert!(
+            info_template.contains("INFO request"),
+            "template should preserve log message: {info_template}"
+        );
 
         std::fs::remove_file(path).ok();
     }
@@ -1326,7 +1580,11 @@ mod tests {
             let event = events[(i % events.len() as u64) as usize];
             content.push_str(&format!(
                 "2026-07-19T10:{:02}:{:02}.{:03}Z INFO worker-{} {}\n",
-                (i / 60) % 60, i % 60, i % 1000, i % 8, event
+                (i / 60) % 60,
+                i % 60,
+                i % 1000,
+                i % 8,
+                event
             ));
         }
         let path = write_temp(&content);
@@ -1362,7 +1620,8 @@ mod tests {
     fn live_tailing_append_new_data_loads_appended_content() {
         use std::time::Duration;
 
-        let initial_content = "2026-07-19T10:00:00.000Z INFO line 1\n2026-07-19T10:00:01.000Z INFO line 2\n";
+        let initial_content =
+            "2026-07-19T10:00:00.000Z INFO line 1\n2026-07-19T10:00:01.000Z INFO line 2\n";
         let appended_content = "2026-07-19T10:00:02.000Z WARN line 3\n";
 
         let path = write_temp(initial_content);
@@ -1391,12 +1650,22 @@ mod tests {
         assert_eq!(doc.line(2).as_ref(), "2026-07-19T10:00:02.000Z WARN line 3");
 
         let has_warn_template = doc.templates.iter().any(|t| t.pattern.contains("WARN"));
-        assert!(has_warn_template, "Templates should be re-mined to include 'WARN'");
+        assert!(
+            has_warn_template,
+            "Templates should be re-mined to include 'WARN'"
+        );
 
         // Check that calling it again with no new data is a no-op.
         let appended_again = doc.append_new_data().unwrap();
-        assert!(!appended_again, "append_new_data should return false when no new data is available");
-        assert_eq!(doc.total_lines(), 3, "line count should be unchanged after no-op append");
+        assert!(
+            !appended_again,
+            "append_new_data should return false when no new data is available"
+        );
+        assert_eq!(
+            doc.total_lines(),
+            3,
+            "line count should be unchanged after no-op append"
+        );
 
         std::fs::remove_file(path).ok();
     }
@@ -1420,7 +1689,10 @@ mod tests {
 
         let result1 = doc.append_new_data();
         assert!(result1.is_err(), "should err on partial shrink");
-        assert_eq!(result1.unwrap_err(), "file has shrunk on disk; a full reload is required");
+        assert_eq!(
+            result1.unwrap_err(),
+            "file has shrunk on disk; a full reload is required"
+        );
         // Document state should be unchanged
         assert_eq!(doc.total_lines(), original_line_count);
         assert_eq!(doc.file_size, original_size);
@@ -1463,13 +1735,69 @@ mod tests {
 
         // append_new_data should detect an in-place modification via mtime and return an error.
         let result = doc.append_new_data();
-        assert!(result.is_err(), "should return an error for in-place modification");
-        assert_eq!(result.unwrap_err(), "file has changed on disk; a full reload is required");
+        assert!(
+            result.is_err(),
+            "should return an error for in-place modification"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "file has changed on disk; a full reload is required"
+        );
 
         // The mmap provides a live view, but our indexes are stale.
         // The application should not use the document in this state.
-        assert_eq!(doc.line(1).as_ref(), "line X", "mmap should reflect the live file content");
+        assert_eq!(
+            doc.line(1).as_ref(),
+            "line X",
+            "mmap should reflect the live file content"
+        );
 
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn detects_12_hour_sample_log() {
+        // Mirror the real sample.log bytes: leading non-breaking space (U+00A0)
+        // and a narrow no-break space (U+202F) before "PM".
+        let content = "\u{a0}2026-08-14 4:08:23.668\u{202f}PM [com.apple.main-thread:18836] D hi\n\
+                       \u{a0}2026-08-14 4:08:24.000\u{202f}PM [com.apple.main-thread:18836] D bye\n";
+        let path = write_temp(content);
+        let doc = LogDocument::open(&path).unwrap();
+        assert_eq!(
+            doc.time_format_name(),
+            Some("ISO-8601 12h AM/PM".to_string())
+        );
+        assert!(
+            doc.time_range.is_some(),
+            "12h AM/PM timestamps should populate the timeline"
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn uses_custom_date_format_when_supplied() {
+        let content = "2026_08_15 10:08:00 alpha\n2026_08_15 10:08:01 beta\nno time\n";
+        let path = write_temp(content);
+        let def = crate::core::time::CustomDateFormat {
+            name: "underscore".into(),
+            regex: r"(?P<year>\d{4})_(?P<month>\d{2})_(?P<day>\d{2}) (?P<hour>\d{2}):(?P<min>\d{2}):(?P<sec>\d{2})".into(),
+        };
+        let custom = vec![def.compile().unwrap()];
+        let doc = LogDocument::open_with_custom(&path, ParsingConfig::default(), &custom).unwrap();
+        assert_eq!(doc.time_format_name(), Some("underscore".to_string()));
+        assert!(doc.time_range.is_some());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn without_custom_formats_no_false_custom_detection() {
+        // Same shape as the custom test, but opened without custom recognizers:
+        // built-ins don't match it, so there is no timestamp.
+        let content = "2026_08_15 10:08:00 alpha\n2026_08_15 10:08:01 beta\n";
+        let path = write_temp(content);
+        let doc = LogDocument::open(&path).unwrap();
+        assert_eq!(doc.time_format_name(), None);
+        assert!(doc.time_range.is_none());
         std::fs::remove_file(path).ok();
     }
 }

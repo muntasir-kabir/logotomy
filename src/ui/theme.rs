@@ -8,26 +8,26 @@ use eframe::egui::Color32;
 /// light surfaces. Visually similar hues are spaced far apart so neighbouring lanes stay
 /// distinguishable. Cycled in order by filter index (see `MAX_FILTERS`).
 pub const FILTER_COLORS_LIGHT: [Color32; 20] = [
-    Color32::from_rgb(210, 35, 45),   // Red
-    Color32::from_rgb(35, 105, 210),  // Blue
-    Color32::from_rgb(25, 155, 70),   // Green
-    Color32::from_rgb(145, 45, 185),  // Purple
-    Color32::from_rgb(235, 110, 15),  // Orange
-    Color32::from_rgb(15, 155, 175),  // Cyan
-    Color32::from_rgb(185, 146, 15),  // Yellow
-    Color32::from_rgb(125, 70, 30),   // Brown
-    Color32::from_rgb(105, 155, 25),  // Lime
-    Color32::from_rgb(190, 35, 125),  // Magenta
-    Color32::from_rgb(90, 50, 150),   // Indigo
-    Color32::from_rgb(200, 80, 25),   // Dark Orange
-    Color32::from_rgb(25, 125, 105),  // Teal
-    Color32::from_rgb(155, 115, 25),  // Gold
-    Color32::from_rgb(155, 45, 95),   // Raspberry
-    Color32::from_rgb(60, 75, 150),   // Blue-gray
-    Color32::from_rgb(45, 125, 55),   // Forest Green
-    Color32::from_rgb(125, 55, 145),  // Plum
-    Color32::from_rgb(170, 95, 45),   // Tan
-    Color32::from_rgb(80, 80, 80),    // Gray
+    Color32::from_rgb(210, 35, 45),  // Red
+    Color32::from_rgb(35, 105, 210), // Blue
+    Color32::from_rgb(25, 155, 70),  // Green
+    Color32::from_rgb(145, 45, 185), // Purple
+    Color32::from_rgb(235, 110, 15), // Orange
+    Color32::from_rgb(15, 155, 175), // Cyan
+    Color32::from_rgb(185, 146, 15), // Yellow
+    Color32::from_rgb(125, 70, 30),  // Brown
+    Color32::from_rgb(105, 155, 25), // Lime
+    Color32::from_rgb(190, 35, 125), // Magenta
+    Color32::from_rgb(90, 50, 150),  // Indigo
+    Color32::from_rgb(200, 80, 25),  // Dark Orange
+    Color32::from_rgb(25, 125, 105), // Teal
+    Color32::from_rgb(155, 115, 25), // Gold
+    Color32::from_rgb(155, 45, 95),  // Raspberry
+    Color32::from_rgb(60, 75, 150),  // Blue-gray
+    Color32::from_rgb(45, 125, 55),  // Forest Green
+    Color32::from_rgb(125, 55, 145), // Plum
+    Color32::from_rgb(170, 95, 45),  // Tan
+    Color32::from_rgb(80, 80, 80),   // Gray
 ];
 
 /// Filter lane palette for dark mode: 20 bright, saturated hues that read clearly against
@@ -124,73 +124,73 @@ pub struct Theme {
 impl Theme {
     pub fn dark() -> Self {
         Self {
-            bg:                Color32::from_rgb(0x1e, 0x1e, 0x2e),
-            surface:           Color32::from_rgb(0x2a, 0x2a, 0x3e),
-            text:              Color32::from_rgb(0xe0, 0xe0, 0xe0),
-            text_muted:        Color32::from_rgb(0x90, 0x90, 0xa0),
-            selection_bg:      Color32::from_rgb(0x3a, 0x3a, 0x5c),
-            accent:            Color32::from_rgb(0x89, 0xb4, 0xfa),
-            histogram:         Color32::from_gray(78),
-            minimap_bg:        Color32::from_gray(38),
-            minimap_bar:       Color32::from_gray(90),
-            gutter:            Color32::from_gray(100),
-            log_text:          Color32::from_gray(215),
-            axis:              Color32::from_gray(130),
-            hint:              Color32::from_gray(70),
-            overlay_bg:        Color32::from_rgba_unmultiplied(20, 60, 120, 110),
-            brush_fill:        Color32::from_rgba_unmultiplied(100, 160, 240, 40),
-            brush_stroke:      Color32::from_rgb(120, 180, 255),
-            minimap_zoom:      Color32::from_rgb(100, 160, 240),
-            selection_line:    Color32::WHITE,
-            diamond_hover:     Color32::WHITE,
-            diamond_stroke:    Color32::WHITE,
-            status_grey:       Color32::from_gray(128),
-            url_text:          Color32::LIGHT_BLUE,
-            placeholder:       Color32::GRAY,
-            viewport_shadow:       Color32::from_rgba_unmultiplied(100, 160, 240, 30),
+            bg: Color32::from_rgb(0x1e, 0x1e, 0x2e),
+            surface: Color32::from_rgb(0x2a, 0x2a, 0x3e),
+            text: Color32::from_rgb(0xe0, 0xe0, 0xe0),
+            text_muted: Color32::from_rgb(0x90, 0x90, 0xa0),
+            selection_bg: Color32::from_rgb(0x3a, 0x3a, 0x5c),
+            accent: Color32::from_rgb(0x89, 0xb4, 0xfa),
+            histogram: Color32::from_gray(78),
+            minimap_bg: Color32::from_gray(38),
+            minimap_bar: Color32::from_gray(90),
+            gutter: Color32::from_gray(100),
+            log_text: Color32::from_gray(215),
+            axis: Color32::from_gray(130),
+            hint: Color32::from_gray(70),
+            overlay_bg: Color32::from_rgba_unmultiplied(20, 60, 120, 110),
+            brush_fill: Color32::from_rgba_unmultiplied(100, 160, 240, 40),
+            brush_stroke: Color32::from_rgb(120, 180, 255),
+            minimap_zoom: Color32::from_rgb(100, 160, 240),
+            selection_line: Color32::WHITE,
+            diamond_hover: Color32::WHITE,
+            diamond_stroke: Color32::WHITE,
+            status_grey: Color32::from_gray(128),
+            url_text: Color32::LIGHT_BLUE,
+            placeholder: Color32::GRAY,
+            viewport_shadow: Color32::from_rgba_unmultiplied(100, 160, 240, 30),
             viewport_shadow_stroke: Color32::from_rgba_unmultiplied(100, 160, 240, 80),
-            warning:               Color32::from_rgb(255, 180, 50),
-            analysis_text:         Color32::from_rgb(255, 140, 140),
-            selection_range_bg:    Color32::from_rgba_unmultiplied(137, 180, 250, 40),
-            filter_colors:         FILTER_COLORS_DARK,
-            search_highlight_bg:   Color32::from_rgba_unmultiplied(255, 180, 50, 90),
-            keyword_highlight_bg:  Color32::from_rgba_unmultiplied(35, 210, 220, 70),
+            warning: Color32::from_rgb(255, 180, 50),
+            analysis_text: Color32::from_rgb(255, 140, 140),
+            selection_range_bg: Color32::from_rgba_unmultiplied(137, 180, 250, 40),
+            filter_colors: FILTER_COLORS_DARK,
+            search_highlight_bg: Color32::from_rgba_unmultiplied(255, 180, 50, 90),
+            keyword_highlight_bg: Color32::from_rgba_unmultiplied(35, 210, 220, 70),
         }
     }
 
     pub fn light() -> Self {
         Self {
-            bg:                Color32::from_rgb(0xf5, 0xf5, 0xf0),
-            surface:           Color32::from_rgb(0xff, 0xff, 0xff),
-            text:              Color32::from_rgb(0x1a, 0x1a, 0x1a),
-            text_muted:        Color32::from_rgb(0x66, 0x66, 0x66),
-            selection_bg:      Color32::from_rgb(0xe0, 0xd0, 0xff),
-            accent:            Color32::from_rgb(0x1e, 0x66, 0xf5),
-            histogram:         Color32::from_gray(180),
-            minimap_bg:        Color32::from_gray(220),
-            minimap_bar:       Color32::from_gray(140),
-            gutter:            Color32::from_gray(140),
-            log_text:          Color32::from_gray(30),
-            axis:              Color32::from_gray(100),
-            hint:              Color32::from_gray(140),
-            overlay_bg:        Color32::from_rgba_unmultiplied(20, 60, 120, 110),
-            brush_fill:        Color32::from_rgba_unmultiplied(100, 160, 240, 40),
-            brush_stroke:      Color32::from_rgb(60, 120, 200),
-            minimap_zoom:      Color32::from_rgb(60, 120, 200),
-            selection_line:    Color32::from_rgb(0, 0, 0),
-            diamond_hover:     Color32::from_rgb(0, 0, 0),
-            diamond_stroke:    Color32::from_rgb(0, 0, 0),
-            status_grey:       Color32::from_gray(160),
-            url_text:          Color32::from_rgb(0, 80, 180),
-            placeholder:       Color32::GRAY,
-            viewport_shadow:       Color32::from_rgba_unmultiplied(80, 130, 200, 60),
+            bg: Color32::from_rgb(0xf5, 0xf5, 0xf0),
+            surface: Color32::from_rgb(0xff, 0xff, 0xff),
+            text: Color32::from_rgb(0x1a, 0x1a, 0x1a),
+            text_muted: Color32::from_rgb(0x66, 0x66, 0x66),
+            selection_bg: Color32::from_rgb(0xe0, 0xd0, 0xff),
+            accent: Color32::from_rgb(0x1e, 0x66, 0xf5),
+            histogram: Color32::from_gray(180),
+            minimap_bg: Color32::from_gray(220),
+            minimap_bar: Color32::from_gray(140),
+            gutter: Color32::from_gray(140),
+            log_text: Color32::from_gray(30),
+            axis: Color32::from_gray(100),
+            hint: Color32::from_gray(140),
+            overlay_bg: Color32::from_rgba_unmultiplied(20, 60, 120, 110),
+            brush_fill: Color32::from_rgba_unmultiplied(100, 160, 240, 40),
+            brush_stroke: Color32::from_rgb(60, 120, 200),
+            minimap_zoom: Color32::from_rgb(60, 120, 200),
+            selection_line: Color32::from_rgb(0, 0, 0),
+            diamond_hover: Color32::from_rgb(0, 0, 0),
+            diamond_stroke: Color32::from_rgb(0, 0, 0),
+            status_grey: Color32::from_gray(160),
+            url_text: Color32::from_rgb(0, 80, 180),
+            placeholder: Color32::GRAY,
+            viewport_shadow: Color32::from_rgba_unmultiplied(80, 130, 200, 60),
             viewport_shadow_stroke: Color32::from_rgba_unmultiplied(80, 130, 200, 120),
-            warning:               Color32::from_rgb(200, 100, 0),
-            analysis_text:         Color32::from_rgb(200, 50, 50),
-            selection_range_bg:    Color32::from_rgba_unmultiplied(30, 102, 245, 30),
-            filter_colors:         FILTER_COLORS_LIGHT,
-            search_highlight_bg:   Color32::from_rgba_unmultiplied(255, 200, 0, 110),
-            keyword_highlight_bg:  Color32::from_rgba_unmultiplied(15, 155, 175, 60),
+            warning: Color32::from_rgb(200, 100, 0),
+            analysis_text: Color32::from_rgb(200, 50, 50),
+            selection_range_bg: Color32::from_rgba_unmultiplied(30, 102, 245, 30),
+            filter_colors: FILTER_COLORS_LIGHT,
+            search_highlight_bg: Color32::from_rgba_unmultiplied(255, 200, 0, 110),
+            keyword_highlight_bg: Color32::from_rgba_unmultiplied(15, 155, 175, 60),
         }
     }
 }

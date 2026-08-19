@@ -98,6 +98,18 @@ cargo build --release --no-default-features
 - A **progress bar** shows real indexing progress (two stages: *Indexing lines*, then *Mining templates & timestamps*). Cancel with × if you dropped the wrong file.
 - Each file opens in its own **tab** — open as many as you like, close them with the × next to the tab name.
 
+### Custom date recognizers
+logotomy auto-detects the timestamp family (shown as `format: … · date: …` in the top bar). If your log uses a date shape it doesn't recognize, add your own:
+
+1. Click **Custom date** (top bar, left of Settings).
+2. Give the format a **Name**, paste a **Regex** that captures the timestamp using named groups — required `year, month, day, hour, min, sec`, optional `ms` (milliseconds) and `ampm` (for 12-hour `AM`/`PM`). Example for `2026-08-14 4:08:23.668 PM`:
+   ```text
+   (?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) (?P<hour>\d{1,2}):(?P<min>\d{2}):(?P<sec>\d{2})\.(?P<ms>\d{3}) (?P<ampm>[AP]M)
+   ```
+3. Paste a **sample log line** under it. The window live-verifies the regex and prints the parsed components (`Year: … Month: … Date: … Hour: … Min: … Sec: … MILLI SECOND: …`).
+4. Click **Add custom date format** (enabled once the regex matches). It's saved to `~/.logotomy/custom_date_format_list.json` and tried together with the built-in families on the **next file you open**.
+5. To apply to the file that's already open, use **Re-scan active log** in the same window (per-tab filters/pins/scroll reset on re-scan).
+
 ### The log view (center)
 - Virtualized: a 5-million-line file scrolls as smoothly as a 50-line one.
 - Gutter shows the **line number** and the line's **template ID** (`T12`).
@@ -159,8 +171,12 @@ Auto-detected per file from a sample of the first lines. Supported families:
 |---|---|
 | ISO-8601 | `2026-07-19T10:15:30.123Z`, `2026-07-19 10:15:30,456`, `…+06:00` |
 | Slashed | `2026/07/19 10:15:30` |
+| US numeric | `08/20/2026 10:15:30.125`, `08-20-2026 10:15:30` |
+| Day-first numeric | `20-08-2026 10:15:30`, `20.08.2026 10:15:30` |
+| Year-first dotted | `2026.08.20 10:15:30` |
 | Syslog | `Jan  5 03:22:11` (assumes current year) |
 | Apache | `10/Oct/2024:13:55:36 +0000` |
+| RFC 2822 | `Thu, 20 Aug 2026 10:15:30 +0000` |
 | Epoch | `1784158530123` or `1784158530` |
 | Logcat threadtime | `07-15 22:00:01.123` (yearless) |
 | glog | `I0715 22:00:01.123456` (yearless) |
@@ -193,7 +209,10 @@ AI assistant can load logs, query them with filters, and pull exact log windows.
 In the GUI you can also start an **in-process MCP server** from the top toolbar
 ("Start MCP", next to Settings). It binds a random OS-assigned port with a
 per-session random 6-digit secret token in the URL (`http://127.0.0.1:PORT/SECRET`),
-and "Copy MCP instruction" copies a ready-to-paste prompt for your coding agent.
+and "Copy MCP instruction" copies a ready-to-paste prompt for your coding agent. The prompt
+explains that GUI mode already serves the selected tab, recommends starting with
+`summarize_log`, and warns that the URL contains a temporary local secret. Stop MCP when you
+are finished sharing the log.
 GUI mode serves the active log and exposes the analysis tools (plus GUI-only
 `trim`) without `load_log`/`list_logs`/`close_log`.
 

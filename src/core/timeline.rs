@@ -47,8 +47,8 @@ impl Timeline {
                     ((v - start_ms).clamp(0, span) * (nb as i64 - 1) / span) as usize
                 }
                 TimelineDomain::Sequence => {
-                    (v.clamp(0, n_lines as i64 - 1) * (nb as i64 - 1)
-                        / (n_lines as i64 - 1).max(1)) as usize
+                    (v.clamp(0, n_lines as i64 - 1) * (nb as i64 - 1) / (n_lines as i64 - 1).max(1))
+                        as usize
                 }
             }
         };
@@ -153,12 +153,7 @@ impl Timeline {
 
     /// Returns filter point slices that fall within [x_min, x_max].
     /// Points are `(line_index, x_value)`. Uses binary search per filter lane.
-    pub fn points_in_range(
-        &self,
-        ki: usize,
-        x_min: i64,
-        x_max: i64,
-    ) -> Option<&[(u32, i64)]> {
+    pub fn points_in_range(&self, ki: usize, x_min: i64, x_max: i64) -> Option<&[(u32, i64)]> {
         let pts = self.filter_points.get(ki)?;
         if pts.is_empty() {
             return None;

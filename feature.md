@@ -11,6 +11,7 @@ Everything currently implemented, and what's deliberately not (yet).
 | SIMD line index | one `memchr` pass builds the line-offset table |
 | Real progress reporting | 2 stages (Indexing / Analyzing), byte-accurate %, cancellable |
 | Log format detection | Pluggable recognizer: JSON, CEF, RFC 5424, Apple Unified Logging (`log show`), logcat brief, iOS OSLog console — one file per format (`src/core/format/`), registry-extensible, `plain` fallback |
+| Timestamp detection | Built-in families (ISO-8601, YYYY/MM/DD, BSD syslog, Apache CLF, epoch, logcat threadtime, glog, ISO-8601 12h AM/PM) + user-defined custom recognizers (regex with named groups, live-verified, saved to `~/.logotomy/custom_date_format_list.json`) (`src/core/time/`, `src/ui/custom_date/`) |
 | Timestamp auto-detection | Pluggable: ISO-8601 (`Z`, offsets, comma/dot millis, space/`T` separator), `YYYY/MM/DD`, syslog `Jan  5`, Apache `10/Oct/2024:13:55:36 -0700`, epoch s/ms, logcat threadtime, glog — one file per family (`src/core/time/`) |
 | Forward-filled timestamps | stack traces & continuation lines inherit previous timestamp |
 | Native Drain template mining | fixed-depth parse tree, `<*>` wildcards, per-line template ID, occurrence counts, example line — zero Python |

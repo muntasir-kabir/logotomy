@@ -13,8 +13,8 @@
     windows_subsystem = "windows"
 )]
 
-use std::sync::atomic::AtomicBool;
 use std::io::Write;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 const USAGE: &str = r#"logotomy — high-performance log analyzer
@@ -44,7 +44,9 @@ fn main() {
 
     if is_mcp {
         // Parse optional --port and --status-file
-        let port = args.iter().position(|a| a == "--port")
+        let port = args
+            .iter()
+            .position(|a| a == "--port")
             .and_then(|pos| args.get(pos + 1))
             .and_then(|s| s.parse::<u16>().ok());
 
@@ -100,21 +102,26 @@ fn run_gui() {
 
         fn log(&self, record: &log::Record) {
             // Write to stderr
-            eprintln!("{} [{}] {} — {}",
+            eprintln!(
+                "{} [{}] {} — {}",
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
                 record.level(),
                 record.target(),
-                record.args());
+                record.args()
+            );
 
             // Write to file
             if let Some(ref file) = self.file {
                 if let Ok(mut f) = file.lock() {
-                    let _ = writeln!(f, "{} [{}] {}:{} — {}",
+                    let _ = writeln!(
+                        f,
+                        "{} [{}] {}:{} — {}",
                         chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
                         record.level(),
                         record.file().unwrap_or("<unknown>"),
                         record.line().unwrap_or(0),
-                        record.args());
+                        record.args()
+                    );
                 }
             }
         }
@@ -133,7 +140,10 @@ fn run_gui() {
         .map(|()| log::set_max_level(level))
         .ok();
 
-    log::info!("logotomy GUI starting — logs also written to {}", log_path.display());
+    log::info!(
+        "logotomy GUI starting — logs also written to {}",
+        log_path.display()
+    );
 
     // Decode the embedded app icon (logotomy_256.png) into RGBA for the native
     // window icon. On Windows and Linux this sets the window/taskbar icon; on
@@ -152,7 +162,11 @@ fn run_gui() {
             }
             Err(e) => {
                 log::warn!("failed to decode app icon: {e}");
-                std::sync::Arc::new(eframe::egui::IconData { rgba: Vec::new(), width: 0, height: 0 })
+                std::sync::Arc::new(eframe::egui::IconData {
+                    rgba: Vec::new(),
+                    width: 0,
+                    height: 0,
+                })
             }
         }
     }
@@ -177,7 +191,9 @@ fn run_gui() {
 #[cfg(not(feature = "gui"))]
 fn run_gui() {
     eprintln!("logotomy: GUI mode is not available in this build.");
-    eprintln!("Rebuild with the 'gui' feature enabled, or use 'logotomy --mcp' for the MCP server.");
+    eprintln!(
+        "Rebuild with the 'gui' feature enabled, or use 'logotomy --mcp' for the MCP server."
+    );
     eprintln!("{USAGE}");
     std::process::exit(1);
 }

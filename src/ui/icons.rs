@@ -69,7 +69,7 @@ pub enum Icon {
     Check,
     Uncheck,
     Visible,
-    Invisible, // Checkbox / visibility
+    Invisible,    // Checkbox / visibility
     WindowResize, // Window management
 }
 
@@ -118,7 +118,7 @@ impl Icon {
             Icon::Check => include_bytes!("icons/check.svg"),
             Icon::Uncheck => include_bytes!("icons/uncheck.svg"),
             Icon::Visible => include_bytes!("icons/visible.svg"),
-            Icon::Invisible => include_bytes!("icons/invisible.svg"), 
+            Icon::Invisible => include_bytes!("icons/invisible.svg"),
             Icon::WindowResize => include_bytes!("icons/window_resize.svg"),
         }
     }
@@ -234,10 +234,8 @@ fn render_svg_to_texture(
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     // Convert to egui ColorImage (RGBA, unmultiplied).
-    let image = ColorImage::from_rgba_unmultiplied(
-        [size_px as usize, height_px as usize],
-        pixmap.data(),
-    );
+    let image =
+        ColorImage::from_rgba_unmultiplied([size_px as usize, height_px as usize], pixmap.data());
     let texture = ctx.load_texture(
         format!("icon_{:?}_{:?}_{}", icon, color, size_px),
         image,
@@ -256,7 +254,12 @@ fn render_svg_to_texture(
 
 /// Returns an egui Image widget for the given icon at the requested size
 /// and color. The SVG is rendered once and cached.
-pub fn icon_image(ctx: &egui::Context, icon: Icon, size: f32, color: Color32) -> egui::Image<'static> {
+pub fn icon_image(
+    ctx: &egui::Context,
+    icon: Icon,
+    size: f32,
+    color: Color32,
+) -> egui::Image<'static> {
     let texture = render_svg_to_texture(ctx, icon, size, color).unwrap_or_else(|| {
         // Fallback: a 1×1 colored pixel so the layout still works.
         let image = ColorImage::filled([1, 1], color);
@@ -332,6 +335,28 @@ pub fn image_button(
     ui.add_sized(size, egui::Button::new(image))
 }
 
+/// A default egui `Button` with an SVG image inside, but positioned at an
+/// exact `rect` instead of flowing with the layout. Used inside fully
+/// custom (painter-layout) surfaces such as the timeline, where widgets
+/// can't rely on normal auto-layout but should still get egui's native
+/// button hover visuals + animation for free.
+pub fn icon_button_at(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    icon: Icon,
+    color: Color32,
+) -> egui::Response {
+    let icon_size = (rect.height() - 2.0).clamp(6.0, 16.0);
+    let image = icon_image(ui.ctx(), icon, icon_size, color);
+    // Exact positioning with zero button padding so the icon fills the rect
+    // (the timer canvas lays everything out by hand).
+    let prev_pad = ui.spacing_mut().button_padding;
+    ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+    let resp = ui.put(rect, egui::Button::new(image).min_size(egui::Vec2::ZERO));
+    ui.spacing_mut().button_padding = prev_pad;
+    resp
+}
+
 /// Draw an SVG icon centered at `center` on the given painter.
 /// Used for painter-based rendering (e.g. timeline panel icons).
 pub fn paint_icon(
@@ -364,15 +389,49 @@ mod tests {
     #[test]
     fn all_embedded_icons_parse_in_usvg() {
         let icons = [
-            Icon::Expand, Icon::Collapse, Icon::Pin, Icon::PopOut, Icon::Close,
-            Icon::Remove, Icon::Reset, Icon::Settings, Icon::Copy, Icon::Add,
-            Icon::Edit, Icon::Save, Icon::Analysis, Icon::Date, Icon::Target,
-            Icon::Timeline, Icon::Log, Icon::Jump, Icon::ArrowUp, Icon::ArrowDown,
-            Icon::ArrowsVertical, Icon::ArrowsHorizontal, Icon::Key, Icon::Book,
-            Icon::Puzzle, Icon::Star, Icon::StarOutline, Icon::App, Icon::OpenFile,
-            Icon::Box, Icon::Trim, Icon::Start, Icon::Stop, Icon::ThemeLight,
-            Icon::ThemeDark, Icon::Mcp, Icon::Integrate, Icon::Popcorn, Icon::Check,
-            Icon::Uncheck, Icon::Visible, Icon::Invisible, Icon::WindowResize,
+            Icon::Expand,
+            Icon::Collapse,
+            Icon::Pin,
+            Icon::PopOut,
+            Icon::Close,
+            Icon::Remove,
+            Icon::Reset,
+            Icon::Settings,
+            Icon::Copy,
+            Icon::Add,
+            Icon::Edit,
+            Icon::Save,
+            Icon::Analysis,
+            Icon::Date,
+            Icon::Target,
+            Icon::Timeline,
+            Icon::Log,
+            Icon::Jump,
+            Icon::ArrowUp,
+            Icon::ArrowDown,
+            Icon::ArrowsVertical,
+            Icon::ArrowsHorizontal,
+            Icon::Key,
+            Icon::Book,
+            Icon::Puzzle,
+            Icon::Star,
+            Icon::StarOutline,
+            Icon::App,
+            Icon::OpenFile,
+            Icon::Box,
+            Icon::Trim,
+            Icon::Start,
+            Icon::Stop,
+            Icon::ThemeLight,
+            Icon::ThemeDark,
+            Icon::Mcp,
+            Icon::Integrate,
+            Icon::Popcorn,
+            Icon::Check,
+            Icon::Uncheck,
+            Icon::Visible,
+            Icon::Invisible,
+            Icon::WindowResize,
         ];
 
         for icon in icons {

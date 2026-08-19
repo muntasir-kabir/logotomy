@@ -13,7 +13,9 @@ pub fn show_settings_popup(ui: &mut egui::Ui, app: &mut LogotomyApp) {
     if !app.show_settings_popup {
         return;
     }
-    let Some(button_rect) = app.settings_button_rect else { return };
+    let Some(button_rect) = app.settings_button_rect else {
+        return;
+    };
 
     let popup_id = egui::Id::new("settings_popup");
     let area = egui::Area::new(popup_id)
@@ -75,6 +77,18 @@ pub fn show_settings_popup(ui: &mut egui::Ui, app: &mut LogotomyApp) {
                 ui.label(RichText::new("Log Parsing").strong().size(14.0));
             });
             ui.add_space(2.0);
+
+            // Custom date recognizers (opened from Settings; was in the top bar)
+            ui.horizontal(|ui| {
+                let ctx = ui.ctx().clone();
+                ui.add(icons::icon_image(&ctx, Icon::Date, 14.0, app.theme.text));
+                if ui.button("Custom date recognizers")
+                    .on_hover_text("Add / manage user-defined date/time recognizers")
+                    .clicked()
+                {
+                    app.show_custom_date_popup = !app.show_custom_date_popup;
+                }
+            });
 
             // Drain similarity threshold
             ui.horizontal(|ui| {
@@ -138,7 +152,7 @@ pub fn show_settings_popup(ui: &mut egui::Ui, app: &mut LogotomyApp) {
                     app.theme.status_grey
                 };
                 ui.add(egui::Label::new(RichText::new("●").color(color).size(14.0)));
-                ui.label(if app.mcp_enabled { "Running" } else { "Stopped" });
+                ui.label(if app.mcp_enabled { "Running · GUI mode" } else { "Stopped" });
                 if let Some(url) = app.mcp_connection_url() {
                     if ui.button("Copy").on_hover_text("Copy address to clipboard").clicked() {
                         ui.ctx().copy_text(url);
@@ -188,6 +202,7 @@ pub fn show_settings_popup(ui: &mut egui::Ui, app: &mut LogotomyApp) {
                 if let Some(url) = app.mcp_connection_url() {
                     ui.add(egui::Label::new(RichText::new(&url).monospace().size(11.0).color(app.theme.url_text)).sense(egui::Sense::click()));
                 }
+                ui.label(RichText::new("Security: this local URL contains a temporary secret. Anyone who obtains it can query the active log until MCP is stopped.").small().color(app.theme.text_muted));
             } else {
                 ui.label(RichText::new("Start MCP to connect AI assistant").strong().size(13.0).color(app.theme.text_muted));
             }
@@ -244,39 +259,35 @@ pub fn show_integrate_popup(ui: &mut egui::Ui, app: &mut LogotomyApp) {
         .default_size([560.0, 480.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            ui.label(RichText::new("Connect logotomy to your preferred AI assistant via the MCP server.").small().color(app.theme.text_muted));
+            ui.label(RichText::new("Connect logotomy to an AI assistant via MCP.").small().color(app.theme.text_muted));
+            ui.label(RichText::new("These snippets start a separate local stdio server. The server will not inherit the file currently open in the GUI; ask the agent to call load_log with the log path. For the GUI's live document, use the Start MCP button and copy its temporary HTTP URL instead.").small().color(app.theme.text_muted));
             ui.separator();
 
             let exe_path = std::env::current_exe()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "/path/to/logotomy".to_string());
+            let stdio_json = mcp_stdio_json(&exe_path);
+            let cline_json = mcp_cline_json(&exe_path);
+            let copilot_json = mcp_copilot_json(&exe_path);
+            let codex_toml = mcp_codex_toml(&exe_path);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.add_space(4.0);
                 agent_section(ui, &app.theme, "Claude Desktop",
-                    "Edit or create this file:", "~/Library/Application Support/Claude/claude_desktop_config.json",
-                    &format!(r#"{{"mcpServers":{{"logotomy":{{"command":"{}","args":["--mcp"]}}}}}}"#, exe_path));
-                agent_section(ui, &app.theme, "Claude Code (CLI)", "Run in your terminal:", "",
-                    &format!("claude mcp add logotomy {} --mcp", exe_path));
+                    "Open Claude Desktop → Settings → Developer → Edit Config, then merge this entry:", claude_desktop_config_path(),
+                    &stdio_json);
+                agent_section(ui, &app.theme, "Claude Code (CLI)", "Run in your terminal, then verify with `claude mcp list`:", "",
+                    &format!("claude mcp add logotomy -- {} --mcp", shell_quote(&exe_path)));
                 agent_section(ui, &app.theme, "Cline (VS Code)",
                     "1. Open Cline in VS Code → gear icon → MCP Server → Edit MCP Settings",
                     "2. Add this entry to `mcpServers`:",
-                    &format!(r#"{{
-  "mcpServers": {{
-    "logotomy": {{
-      "command": "{}",
-      "args": ["--mcp"],
-      "disabled": false,
-      "autoApprove": []
-    }}
-  }}
-}}"#, exe_path));
+                    &cline_json);
                 agent_section(ui, &app.theme, "Cursor", "Edit or create this file:", "~/.cursor/mcp.json",
-                    &format!(r#"{{"mcpServers":{{"logotomy":{{"command":"{}","args":["--mcp"]}}}}}}"#, exe_path));
-                agent_section(ui, &app.theme, "GitHub Copilot Chat (VS Code)", "Edit or create this file in your project:", ".vscode/mcp.json",
-                    &format!(r#"{{"servers":{{"logotomy":{{"command":"{}","args":["--mcp"]}}}}}}"#, exe_path));
-                agent_section(ui, &app.theme, "OpenAI Codex (CLI)", "Run in your terminal (if MCP is supported):", "",
-                    &format!("codex mcp add logotomy {} --mcp", exe_path));
+                    &stdio_json);
+                agent_section(ui, &app.theme, "GitHub Copilot Chat (VS Code)", "Open `.vscode/mcp.json` (or the user MCP configuration) and add this under `servers`; VS Code requires `type`:", ".vscode/mcp.json or ~/.copilot/mcp-config.json",
+                    &copilot_json);
+                agent_section(ui, &app.theme, "OpenAI Codex (CLI)", "Add this to `~/.codex/config.toml`, then restart Codex or reload MCP servers:", "~/.codex/config.toml",
+                    &codex_toml);
             });
         });
     if !open {
@@ -284,16 +295,112 @@ pub fn show_integrate_popup(ui: &mut egui::Ui, app: &mut LogotomyApp) {
     }
 }
 
-fn agent_section(ui: &mut egui::Ui, theme: &Theme, agent: &str, instruction: &str, file_name: &str, code: &str) {
+/// JSON configuration shared by Claude Desktop and Cursor. Serialize the path
+/// instead of interpolating it so spaces, quotes, and Windows separators are
+/// escaped correctly.
+fn mcp_stdio_json(exe_path: &str) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "mcpServers": {
+            "logotomy": { "command": exe_path, "args": ["--mcp"] }
+        }
+    }))
+    .unwrap_or_default()
+}
+
+fn mcp_cline_json(exe_path: &str) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "mcpServers": {
+            "logotomy": {
+                "command": exe_path,
+                "args": ["--mcp"],
+                "disabled": false,
+                "autoApprove": []
+            }
+        }
+    }))
+    .unwrap_or_default()
+}
+
+fn mcp_copilot_json(exe_path: &str) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "servers": {
+            "logotomy": {
+                "type": "stdio",
+                "command": exe_path,
+                "args": ["--mcp"]
+            }
+        }
+    }))
+    .unwrap_or_default()
+}
+
+fn mcp_codex_toml(exe_path: &str) -> String {
+    // JSON string escaping is compatible with TOML basic strings for paths and
+    // gives us a safe quoted command on every supported platform.
+    let command = serde_json::to_string(exe_path).unwrap_or_else(|_| "\"logotomy\"".to_string());
+    format!(
+        "[mcp_servers.logotomy]\ncommand = {command}\nargs = [\"--mcp\"]\nstartup_timeout_ms = 20000"
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn claude_desktop_config_path() -> &'static str {
+    "~/Library/Application Support/Claude/claude_desktop_config.json"
+}
+
+#[cfg(target_os = "windows")]
+fn claude_desktop_config_path() -> &'static str {
+    "%APPDATA%\\Claude\\claude_desktop_config.json"
+}
+
+#[cfg(target_os = "linux")]
+fn claude_desktop_config_path() -> &'static str {
+    "~/.config/Claude/claude_desktop_config.json"
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn claude_desktop_config_path() -> &'static str {
+    "Claude Desktop → Settings → Developer → Edit Config"
+}
+
+/// Quote a local executable for the user's shell when generating a Claude
+/// Code command. The JSON-based integrations use serializers above instead.
+#[cfg(not(target_os = "windows"))]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "windows")]
+fn shell_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\\\""))
+}
+
+fn agent_section(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    agent: &str,
+    instruction: &str,
+    file_name: &str,
+    code: &str,
+) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(agent).strong().size(13.0));
-        if ui.button("Copy").on_hover_text(format!("Copy config for {}", agent)).clicked() {
+        if ui
+            .button("Copy")
+            .on_hover_text(format!("Copy config for {}", agent))
+            .clicked()
+        {
             ui.ctx().copy_text(code.to_string());
         }
     });
     ui.label(RichText::new(instruction).small().color(theme.text_muted));
     if !file_name.is_empty() {
-        ui.label(RichText::new(file_name).monospace().size(10.0).color(theme.url_text));
+        ui.label(
+            RichText::new(file_name)
+                .monospace()
+                .size(10.0)
+                .color(theme.url_text),
+        );
     }
     let code_lines: Vec<&str> = code.lines().collect();
     if code_lines.len() > 2 {
@@ -315,12 +422,67 @@ fn agent_section(ui: &mut egui::Ui, theme: &Theme, agent: &str, instruction: &st
             .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
-                ui.add(egui::Label::new(RichText::new(&display_text).monospace().size(10.0).color(code_text_color)).sense(egui::Sense::click()));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&display_text)
+                            .monospace()
+                            .size(10.0)
+                            .color(code_text_color),
+                    )
+                    .sense(egui::Sense::click()),
+                );
             });
     } else {
-        ui.add(egui::Label::new(RichText::new(code).monospace().size(10.0).color(theme.url_text)).sense(egui::Sense::click()));
+        ui.add(
+            egui::Label::new(
+                RichText::new(code)
+                    .monospace()
+                    .size(10.0)
+                    .color(theme.url_text),
+            )
+            .sense(egui::Sense::click()),
+        );
     }
     ui.add_space(8.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_json_configs_escape_executable_paths() {
+        let path = if cfg!(windows) {
+            r#"C:\Program Files\Logotomy\logotomy.exe"#
+        } else {
+            "/Applications/Logotomy\" nightly/logotomy"
+        };
+        for config in [
+            mcp_stdio_json(path),
+            mcp_cline_json(path),
+            mcp_copilot_json(path),
+        ] {
+            let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+            let command = parsed
+                .pointer("/mcpServers/logotomy/command")
+                .or_else(|| parsed.pointer("/servers/logotomy/command"))
+                .and_then(serde_json::Value::as_str);
+            assert_eq!(command, Some(path));
+        }
+    }
+
+    #[test]
+    fn generated_agent_configs_use_expected_transport_shapes() {
+        let path = "/tmp/logotomy";
+        let copilot: serde_json::Value = serde_json::from_str(&mcp_copilot_json(path)).unwrap();
+        assert_eq!(copilot["servers"]["logotomy"]["type"], "stdio");
+        assert_eq!(copilot["servers"]["logotomy"]["args"][0], "--mcp");
+
+        let codex = mcp_codex_toml(path);
+        assert!(codex.contains("[mcp_servers.logotomy]"));
+        assert!(codex.contains("command = \"/tmp/logotomy\""));
+        assert!(codex.contains("args = [\"--mcp\"]"));
+    }
 }
 
 /// Open a URL in the system default browser (cross-platform, no extra deps).
@@ -328,7 +490,9 @@ fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }

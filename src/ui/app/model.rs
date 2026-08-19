@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -7,18 +7,17 @@ use std::time::{Duration, Instant};
 use aho_corasick::AhoCorasick;
 use crossbeam_channel::Receiver;
 use eframe::egui;
-use egui::{Color32};
-use egui_dock::{DockState};
+use egui::Color32;
+use egui_dock::DockState;
 use log::{error, info};
 
+use crate::ui::{icons, theme::Theme};
 use logotomy::core::document::{LoadProgress, LoadStage, LogDocument, ParsingConfig};
+use logotomy::core::saved_filter::SavedFilter;
 use logotomy::core::search;
 use logotomy::core::settings::Settings;
-use logotomy::core::saved_filter::SavedFilter;
+use logotomy::core::time::{CustomDateFormat, CustomTimeFormat};
 use logotomy::core::timeline::{Timeline, DEFAULT_BUCKETS};
-use crate::ui::{icons, theme::Theme};
-
-
 
 /// Actions triggered from the right-click context menu on timeline or log view.
 #[derive(Clone, Copy, Debug)]
@@ -124,6 +123,17 @@ pub struct LogTab {
     pub keyword_highlight: Option<String>,
     pub keyword_automaton: Option<Arc<AhoCorasick>>,
 
+    /// One-shot flag set by Cmd/Ctrl+F, consumed by `show_search_ui` to focus
+    /// the log search box (and select existing text). Persists until the Log
+    /// view renders so the shortcut works from any dock view.
+    pub search_focus_requested: bool,
+    /// When the search box last gained focus via Cmd/Ctrl+F, driving the short
+    /// highlight "pulse" animation on the box border.
+    pub search_focus_anim: Option<Instant>,
+    /// Index of the most recently added filter + when it was added, driving the
+    /// short "new filter" highlight animation on the timeline lane label.
+    pub filter_highlight: Option<(usize, Instant)>,
+
     pub dock_state: DockState<ViewTab>,
     pub detached_views: HashSet<ViewTab>,
     pub detached_locations: HashMap<ViewTab, egui_dock::TabPath>,
@@ -148,7 +158,11 @@ impl LogTab {
         // Set up the default dock layout. Timeline is a fixed top panel
         // (always fully visible), so the dock only contains Log + Pinned.
         let mut dock_state = DockState::new(vec![ViewTab::Log]);
-        let [_main_surface, _bottom_surface] = dock_state.main_surface_mut().split_below(egui_dock::NodeIndex::root(), 0.8, vec![ViewTab::Pinned]);
+        let [_main_surface, _bottom_surface] = dock_state.main_surface_mut().split_below(
+            egui_dock::NodeIndex::root(),
+            0.8,
+            vec![ViewTab::Pinned],
+        );
 
         LogTab {
             doc,
@@ -192,6 +206,9 @@ impl LogTab {
             find_rx: None,
             keyword_highlight: None,
             keyword_automaton: None,
+            search_focus_requested: false,
+            search_focus_anim: None,
+            filter_highlight: None,
             dock_state,
             detached_views: HashSet::new(),
             detached_locations: HashMap::new(),
@@ -220,8 +237,7 @@ impl LogTab {
         // preserved across a filter change.
         self.preserve_anchor = self.viewport_range.map(|(first, _)| first);
 
-        let all_active = self.everything_else_active
-            && self.lane_active.iter().all(|&a| a);
+        let all_active = self.everything_else_active && self.lane_active.iter().all(|&a| a);
         if all_active {
             self.visible_lines = None;
             return;
@@ -229,10 +245,14 @@ impl LogTab {
 
         let mut included = vec![false; n];
         for (ki, active) in self.lane_active.iter().enumerate() {
-            if !active { continue; }
+            if !active {
+                continue;
+            }
             if let Some(matches) = self.matches.get(ki) {
                 for &ln in matches {
-                    if ln < n { included[ln] = true; }
+                    if ln < n {
+                        included[ln] = true;
+                    }
                 }
             }
         }
@@ -240,19 +260,29 @@ impl LogTab {
             let mut matched = vec![false; n];
             for matches in &self.matches {
                 for &ln in matches {
-                    if ln < n { matched[ln] = true; }
+                    if ln < n {
+                        matched[ln] = true;
+                    }
                 }
             }
             for (i, inc) in included.iter_mut().enumerate() {
-                if !matched[i] { *inc = true; }
+                if !matched[i] {
+                    *inc = true;
+                }
             }
         }
 
-        let visible: Vec<usize> = included.iter().enumerate()
+        let visible: Vec<usize> = included
+            .iter()
+            .enumerate()
             .filter(|(_, &inc)| inc)
             .map(|(i, _)| i)
             .collect();
-        self.visible_lines = if visible.len() == n { None } else { Some(visible) };
+        self.visible_lines = if visible.len() == n {
+            None
+        } else {
+            Some(visible)
+        };
 
         // Verify the preserved anchor is still in the new filter. If not,
         // fall back to the nearest still-visible line (or clear it if none).
@@ -266,9 +296,16 @@ impl LogTab {
                     Some(vis) if !vis.is_empty() => {
                         let insertion = vis.binary_search(&anchor).unwrap_or_else(|e| e);
                         // Pick whichever of the two bracketing lines is closest.
-                        let nearest = match (insertion.checked_sub(1).map(|i| vis[i]), vis.get(insertion).copied()) {
+                        let nearest = match (
+                            insertion.checked_sub(1).map(|i| vis[i]),
+                            vis.get(insertion).copied(),
+                        ) {
                             (Some(lower), Some(upper)) => {
-                                if anchor - lower <= upper - anchor { lower } else { upper }
+                                if anchor - lower <= upper - anchor {
+                                    lower
+                                } else {
+                                    upper
+                                }
                             }
                             (Some(lower), None) => lower,
                             (None, Some(upper)) => upper,
@@ -337,8 +374,13 @@ impl LogTab {
             cancel.store(true, Ordering::Relaxed);
         }
         self.highlighter = search::build_automaton(
-            &self.filters.iter().map(|k| k.text.clone()).collect::<Vec<_>>(),
-        ).map(Arc::new);
+            &self
+                .filters
+                .iter()
+                .map(|k| k.text.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map(Arc::new);
 
         while self.lane_active.len() < self.filters.len() {
             self.lane_active.push(true);
@@ -399,7 +441,9 @@ impl LogTab {
     /// Ensure the timeline zoom window includes the current context_line.
     /// If the line is outside the visible range, auto-pan to center on it.
     pub fn ensure_visible(&mut self) {
-        let Some(line) = self.context_line else { return };
+        let Some(line) = self.context_line else {
+            return;
+        };
         let v = match self.timeline.domain {
             logotomy::core::timeline::TimelineDomain::Time { .. } => {
                 // context_line can hold a stale index after an MCP doc swap and
@@ -412,10 +456,16 @@ impl LogTab {
             }
             logotomy::core::timeline::TimelineDomain::Sequence => line as i64,
         };
-        if v < 0 { return; }
+        if v < 0 {
+            return;
+        }
         let (full_start, full_end) = match self.timeline.domain {
-            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => (start_ms, end_ms),
-            logotomy::core::timeline::TimelineDomain::Sequence => (1, self.doc.total_lines() as i64),
+            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => {
+                (start_ms, end_ms)
+            }
+            logotomy::core::timeline::TimelineDomain::Sequence => {
+                (1, self.doc.total_lines() as i64)
+            }
         };
         let (view_start, view_end) = match self.timeline_zoom {
             Some((s, e)) => (s, e),
@@ -443,7 +493,9 @@ impl LogTab {
     /// preserving the current zoom span. A partially-visible shadow is left alone
     /// so an intentionally-zoomed window stays stable while scrolling within it.
     pub fn ensure_viewport_visible(&mut self) {
-        let Some((first_line, last_line)) = self.viewport_range else { return };
+        let Some((first_line, last_line)) = self.viewport_range else {
+            return;
+        };
         let v0 = match self.timeline.domain {
             logotomy::core::timeline::TimelineDomain::Time { .. } => {
                 // viewport_range can hold a stale index after an MCP doc swap and
@@ -465,10 +517,16 @@ impl LogTab {
             logotomy::core::timeline::TimelineDomain::Sequence => last_line as i64 + 1,
         };
         // Match the shadow renderer: only act when the mapped values are valid.
-        if v0 < 0 || v1 < 0 { return; }
+        if v0 < 0 || v1 < 0 {
+            return;
+        }
         let (full_start, full_end) = match self.timeline.domain {
-            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => (start_ms, end_ms),
-            logotomy::core::timeline::TimelineDomain::Sequence => (1, self.doc.total_lines() as i64),
+            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => {
+                (start_ms, end_ms)
+            }
+            logotomy::core::timeline::TimelineDomain::Sequence => {
+                (1, self.doc.total_lines() as i64)
+            }
         };
         let (view_start, view_end) = match self.timeline_zoom {
             Some((s, e)) => (s, e),
@@ -572,7 +630,9 @@ impl LogTab {
 
     /// Poll the background filter scan; rebuild the timeline when it lands.
     pub fn poll_search(&mut self) -> bool {
-        let Some((rx, _)) = &self.search_rx else { return false; };
+        let Some((rx, _)) = &self.search_rx else {
+            return false;
+        };
         match rx.try_recv() {
             Ok(matches) => {
                 self.matches = matches;
@@ -612,14 +672,22 @@ impl LogTab {
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_worker = Arc::clone(&cancel);
         std::thread::spawn(move || {
-            let _ = tx.send(search::find_lines(&doc, subset.as_deref(), &needle, true, &cancel_worker));
+            let _ = tx.send(search::find_lines(
+                &doc,
+                subset.as_deref(),
+                &needle,
+                true,
+                &cancel_worker,
+            ));
         });
         self.find_rx = Some((rx, cancel));
     }
 
     /// Poll the background find scan. Returns `true` while in flight.
     pub fn poll_find(&mut self) -> bool {
-        let Some((rx, _)) = &self.find_rx else { return false; };
+        let Some((rx, _)) = &self.find_rx else {
+            return false;
+        };
         match rx.try_recv() {
             Ok(matches) => {
                 self.find_matches = matches;
@@ -642,7 +710,9 @@ impl LogTab {
 
     /// Step to the next match, wrapping around.
     pub fn find_next(&mut self) {
-        if self.find_matches.is_empty() { return; }
+        if self.find_matches.is_empty() {
+            return;
+        }
         let pos = self.find_pos.unwrap_or(0);
         let next = (pos + 1) % self.find_matches.len();
         self.goto_find_match(next);
@@ -650,9 +720,15 @@ impl LogTab {
 
     /// Step to the previous match, wrapping around.
     pub fn find_prev(&mut self) {
-        if self.find_matches.is_empty() { return; }
+        if self.find_matches.is_empty() {
+            return;
+        }
         let pos = self.find_pos.unwrap_or(0);
-        let prev = if pos == 0 { self.find_matches.len() - 1 } else { pos - 1 };
+        let prev = if pos == 0 {
+            self.find_matches.len() - 1
+        } else {
+            pos - 1
+        };
         self.goto_find_match(prev);
     }
 
@@ -685,6 +761,35 @@ impl LogTab {
             .map(|k| search::build_find_automaton(&k, true))
             .flatten()
             .map(Arc::new);
+    }
+
+    /// Request the log search box to grab focus (Cmd/Ctrl+F). Consumed by the
+    /// log view, which also selects any existing text and pulses the border.
+    pub fn trigger_search_focus(&mut self) {
+        self.search_focus_requested = true;
+        self.search_focus_anim = Some(Instant::now());
+    }
+
+    /// Add a filter to the timeline (shared by the toolbar strip and the search
+    /// box "Add Filter" button). Skips empty / duplicate / at-cap filters.
+    /// Returns the new filter index, or `None` if nothing was added. Triggers a
+    /// background rescan and stamps a short highlight on the timeline lane.
+    pub fn push_filter(&mut self, text: &str, color: Color32) -> Option<usize> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() || self.filters.len() >= MAX_FILTERS {
+            return None;
+        }
+        if self.filters.iter().any(|k| k.text == trimmed) {
+            return None;
+        }
+        let idx = self.filters.len();
+        self.filters.push(Filter {
+            text: trimmed.to_string(),
+            color,
+        });
+        self.filter_highlight = Some((idx, Instant::now()));
+        self.rescan_filters();
+        Some(idx)
     }
 }
 
@@ -750,6 +855,17 @@ pub struct LogotomyApp {
     pub show_settings_popup: bool,
     pub settings_button_rect: Option<egui::Rect>,
 
+    // ---- Custom date recognizers ----
+    /// User-defined custom date formats (persisted to
+    /// `~/.logotomy/custom_date_format_list.json`). Tried alongside built-ins
+    /// when a log file is opened.
+    pub custom_date_formats: Vec<CustomDateFormat>,
+    pub show_custom_date_popup: bool,
+    /// "Add recognizer" form state.
+    pub cd_name: String,
+    pub cd_regex: String,
+    pub cd_sample: String,
+
     // File update polling
     pub last_file_check: Option<Instant>,
 }
@@ -780,9 +896,10 @@ impl LogotomyApp {
         }
 
         let available_filters = Self::load_available_filters();
+        let custom_date_formats = Settings::load_custom_date_formats();
 
-        info!("settings loaded: dark_mode={dark_mode}, recent_files={}, filters={}",
-            settings.recent_files.len(), available_filters.len());
+        info!("settings loaded: dark_mode={dark_mode}, recent_files={}, filters={}, custom_date_formats={}",
+            settings.recent_files.len(), available_filters.len(), custom_date_formats.len());
 
         Self {
             tabs: Vec::new(),
@@ -790,7 +907,11 @@ impl LogotomyApp {
             active_loader: None,
             loaders: Vec::new(),
             status: "Drop a log file anywhere. Go on.".to_string(),
-            theme: if dark_mode { Theme::dark() } else { Theme::light() },
+            theme: if dark_mode {
+                Theme::dark()
+            } else {
+                Theme::light()
+            },
             dark_mode,
             settings,
             mcp_enabled: false,
@@ -818,6 +939,11 @@ impl LogotomyApp {
 
             show_settings_popup: false,
             settings_button_rect: None,
+            custom_date_formats,
+            show_custom_date_popup: false,
+            cd_name: String::new(),
+            cd_regex: String::new(),
+            cd_sample: String::new(),
             last_file_check: Some(Instant::now()),
         }
     }
@@ -840,7 +966,11 @@ impl LogotomyApp {
 
     pub fn toggle_theme(&mut self) {
         self.dark_mode = !self.dark_mode;
-        self.theme = if self.dark_mode { Theme::dark() } else { Theme::light() };
+        self.theme = if self.dark_mode {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
         self.settings.dark_mode = self.dark_mode;
         self.settings.save();
         // Re-color filter lanes for the new theme so already-open filters
@@ -868,7 +998,8 @@ impl LogotomyApp {
             info!("file already open: {}", path.display());
             return;
         }
-        let name = path.file_name()
+        let name = path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
         info!("opening file: {} ({})", path.display(), name);
@@ -881,8 +1012,29 @@ impl LogotomyApp {
             header_sample_lines: self.settings.header_sample_lines,
             drain_depth: self.settings.drain_depth,
         };
-        std::thread::spawn(move || LogDocument::load_with_config(&path_for_load, parsing, tx, cancel_worker));
-        self.loaders.push(FileLoader { name, rx, cancel, stage: LoadStage::Indexing, progress: 0.0 });
+        // Compile the user's custom date recognizers once and hand them to the
+        // loader so time detection considers them alongside the built-ins.
+        let custom_for_load: Vec<CustomTimeFormat> = self
+            .custom_date_formats
+            .iter()
+            .filter_map(|d| d.compile().ok())
+            .collect();
+        std::thread::spawn(move || {
+            LogDocument::load_with_custom(
+                &path_for_load,
+                parsing,
+                &custom_for_load,
+                tx,
+                cancel_worker,
+            )
+        });
+        self.loaders.push(FileLoader {
+            name,
+            rx,
+            cancel,
+            stage: LoadStage::Indexing,
+            progress: 0.0,
+        });
         // The loading file is shown in its own (new) log tab, so focus it.
         self.active_loader = Some(self.loaders.len() - 1);
         self.active = None;
@@ -891,8 +1043,22 @@ impl LogotomyApp {
         self.settings.save();
     }
 
+    /// Re-open the active log with the current custom date formats, so
+    /// recognizers added *after* the file was opened take effect without a
+    /// manual close/reopen. Any per-tab state (filters, pins, scroll) is reset.
+    pub fn reopen_active_with_custom(&mut self) {
+        let Some(idx) = self.active else { return };
+        let path = self.tabs[idx].doc.path.clone();
+        self.close_tab(idx);
+        self.active = None;
+        self.open_file(path);
+    }
+
     pub fn poll_file_updates(&mut self) {
-        if self.last_file_check.map_or(true, |t| t.elapsed() > Duration::from_secs(2)) {
+        if self
+            .last_file_check
+            .map_or(true, |t| t.elapsed() > Duration::from_secs(2))
+        {
             self.check_for_file_updates();
             self.last_file_check = Some(Instant::now());
         }
@@ -911,12 +1077,20 @@ impl LogotomyApp {
                         let _ = doc;
                         tab.stale = false;
                         tab.rescan_filters();
-                        log::info!("File {} was appended. Loaded {} new lines.", file_name, new_lines);
+                        log::info!(
+                            "File {} was appended. Loaded {} new lines.",
+                            file_name,
+                            new_lines
+                        );
                     }
                     Ok(false) => { /* No change, do nothing. */ }
                     Err(e) => {
                         // This now handles both shrinking and in-place modification.
-                        log::warn!("File {} changed on disk and requires a full reload: {}", doc.file_name, e);
+                        log::warn!(
+                            "File {} changed on disk and requires a full reload: {}",
+                            doc.file_name,
+                            e
+                        );
                         self.status = format!("'{}' changed on disk — only tailing is supported. Close and reopen the file.", doc.file_name);
                         let _ = doc;
                         tab.stale = true;
@@ -933,15 +1107,28 @@ impl LogotomyApp {
             match self.loaders[i].rx.try_recv() {
                 Ok(LoadProgress::Progress { stage, done, total }) => {
                     self.loaders[i].stage = stage;
-                    self.loaders[i].progress = if total > 0 { (done as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
+                    self.loaders[i].progress = if total > 0 {
+                        (done as f32 / total as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
                 }
                 Ok(LoadProgress::Done(doc)) => {
                     let n = doc.total_lines();
                     let mb = doc.file_size as f64 / 1e6;
-                    info!("loaded {} — {} lines, {:.1} MB, {} templates", self.loaders[i].name, n, mb, doc.templates.len());
+                    info!(
+                        "loaded {} — {} lines, {:.1} MB, {} templates",
+                        self.loaders[i].name,
+                        n,
+                        mb,
+                        doc.templates.len()
+                    );
                     self.status = format!(
                         "Loaded `{}` — `{}` lines, {:.1} MB, {} templates.",
-                        self.loaders[i].name, n, mb, doc.templates.len()
+                        self.loaders[i].name,
+                        n,
+                        mb,
+                        doc.templates.len()
                     );
                     let mut new_tab = LogTab::new(*doc);
                     if let Some(filter_name) = self.settings.default_filter.clone() {
@@ -1004,8 +1191,12 @@ impl LogotomyApp {
     /// Poll the MCP server's dirty flag. If the active doc was modified by an
     /// MCP tool call, re-read it and refresh the UI.
     pub fn poll_mcp_dirty(&mut self) {
-        let Some(ref mcp_state) = self.mcp_state else { return };
-        let Some(active_idx) = self.active else { return };
+        let Some(ref mcp_state) = self.mcp_state else {
+            return;
+        };
+        let Some(active_idx) = self.active else {
+            return;
+        };
 
         let dirty = {
             let guard = mcp_state.lock().unwrap();
@@ -1047,11 +1238,18 @@ impl LogotomyApp {
     /// at the same Arc the GUI is displaying, and `set_active_doc` drops the
     /// stale `_active` match-cache entries as a side effect.
     pub fn sync_mcp_active_doc(&mut self) {
-        let Some(ref mcp_state) = self.mcp_state else { return };
+        let Some(ref mcp_state) = self.mcp_state else {
+            return;
+        };
         for tab in &self.tabs {
-            if !tab.mcp_serving { continue; }
+            if !tab.mcp_serving {
+                continue;
+            }
             let mut guard = mcp_state.lock().unwrap();
-            let stale = guard.active_doc.as_ref().map_or(true, |d| !Arc::ptr_eq(d, &tab.doc));
+            let stale = guard
+                .active_doc
+                .as_ref()
+                .map_or(true, |d| !Arc::ptr_eq(d, &tab.doc));
             if stale {
                 guard.set_active_doc(Arc::clone(&tab.doc));
                 // GUI-originated change — the GUI already holds the newest
@@ -1067,9 +1265,13 @@ impl LogotomyApp {
     /// Only the filter texts are synced — the "Everything Else" lane and lane
     /// toggles are GUI-only and never flow into MCP arithmetic.
     pub fn sync_mcp_filters(&mut self) {
-        let Some(ref mcp_state) = self.mcp_state else { return };
+        let Some(ref mcp_state) = self.mcp_state else {
+            return;
+        };
         for tab in &self.tabs {
-            if !tab.mcp_serving { continue; }
+            if !tab.mcp_serving {
+                continue;
+            }
             let texts: Vec<String> = tab.filters.iter().map(|f| f.text.clone()).collect();
             let mut guard = mcp_state.lock().unwrap();
             if guard.get_filters("_active") != texts {
@@ -1086,8 +1288,14 @@ impl LogotomyApp {
     /// modified by an MCP tool call (filters_add/filters_remove), re-apply it
     /// to the served tab so the GUI lanes match what the agent set.
     pub fn poll_mcp_filters(&mut self) {
-        let Some(ref mcp_state) = self.mcp_state else { return };
-        let dirty = mcp_state.lock().unwrap().filters_dirty.load(Ordering::Relaxed);
+        let Some(ref mcp_state) = self.mcp_state else {
+            return;
+        };
+        let dirty = mcp_state
+            .lock()
+            .unwrap()
+            .filters_dirty
+            .load(Ordering::Relaxed);
         if !dirty {
             return;
         }
@@ -1111,7 +1319,9 @@ impl LogotomyApp {
     }
 
     pub fn close_tab(&mut self, idx: usize) {
-        if idx >= self.tabs.len() { return; }
+        if idx >= self.tabs.len() {
+            return;
+        }
         info!("closing tab {} ({})", idx, self.tabs[idx].doc.file_name);
         if let Some((_, cancel)) = &self.tabs[idx].search_rx {
             cancel.store(true, Ordering::Relaxed);
@@ -1158,7 +1368,11 @@ impl LogotomyApp {
             }
         }
 
-        self.active = if self.tabs.is_empty() { None } else { Some(idx.min(self.tabs.len() - 1)) };
+        self.active = if self.tabs.is_empty() {
+            None
+        } else {
+            Some(idx.min(self.tabs.len() - 1))
+        };
     }
 
     /// The full MCP server URL for the current session, including the dynamic
@@ -1186,7 +1400,22 @@ impl LogotomyApp {
             .and_then(|i| self.tabs.get(i))
             .map(|tab| tab.doc.path.display().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        Some(format!("Connect to MCP server {url} to analyze {log_path} with user."))
+        Some(Self::build_mcp_instruction(&url, &log_path))
+    }
+
+    /// Build a prompt that is actionable for an agent connected to the
+    /// GUI-managed HTTP server. GUI mode already serves the active document,
+    /// so the agent must not try to call load_log.
+    fn build_mcp_instruction(url: &str, log_path: &str) -> String {
+        format!(
+            "Connect to the local logotomy MCP server at:\n\n{url}\n\n\
+The currently selected log is already attached to the server:\n{log_path}\n\n\
+Use the logotomy MCP tools to analyze it. This is GUI mode, so do not call load_log; \
+start with summarize_log using with_filtered_log=false unless the existing GUI filters \
+are relevant. Then use find_occurrences, get_template_anomalies, \
+get_timeline_histogram, get_template_samples, and raw_log as needed.\n\n\
+Treat this URL as a local secret and do not expose it in your response."
+        )
     }
 
     /// Show a self-dismissing toast notification for a few seconds.
@@ -1196,12 +1425,15 @@ impl LogotomyApp {
     }
 
     pub fn start_mcp(&mut self) {
-        if self.mcp_enabled { return; }
+        if self.mcp_enabled {
+            return;
+        }
         if self.tabs.is_empty() {
             self.status = "Open a log file first before starting MCP server.".to_string();
             info!("MCP: cannot start — no tabs open");
             return;
         }
+        self.status = "Starting MCP server…".to_string();
         // Dynamic port (OS-assigned) + a fresh random secret token per session.
         let secret: String = {
             use rand::Rng;
@@ -1220,7 +1452,11 @@ impl LogotomyApp {
                 // filters so `with_filtered_log=true` (the default) starts out
                 // matching what the user is viewing. GUI-originated, so clear
                 // the MCP→GUI dirty flag.
-                let texts: Vec<String> = self.tabs[active_idx].filters.iter().map(|f| f.text.clone()).collect();
+                let texts: Vec<String> = self.tabs[active_idx]
+                    .filters
+                    .iter()
+                    .map(|f| f.text.clone())
+                    .collect();
                 guard.set_filters("_active", texts);
                 guard.filters_dirty.store(false, Ordering::Relaxed);
                 self.tabs[active_idx].mcp_serving = true;
@@ -1240,15 +1476,22 @@ impl LogotomyApp {
         let thread = std::thread::Builder::new()
             .name("mcp-server".to_string())
             .spawn(move || {
-                let _ = logotomy::mcp::run_http(port, state_clone, shutdown_clone, Some(bind_tx), Some(secret_for_thread));
+                let _ = logotomy::mcp::run_http(
+                    port,
+                    state_clone,
+                    shutdown_clone,
+                    Some(bind_tx),
+                    Some(secret_for_thread),
+                );
             });
 
         match thread {
             Ok(handle) => {
-                // Wait briefly for the bind result (100ms timeout).
+                // Wait briefly for the bind result. A little headroom avoids
+                // reporting a false failure when the GUI is under load.
                 // run_http reports the bind result immediately after binding,
                 // so a timeout means the server thread failed to start at all.
-                let bind_result = bind_rx.recv_timeout(Duration::from_millis(100));
+                let bind_result = bind_rx.recv_timeout(Duration::from_millis(500));
                 match bind_result {
                     Ok(Ok(actual_port)) => {
                         self.mcp_thread = Some(handle);
@@ -1258,8 +1501,16 @@ impl LogotomyApp {
                         self.mcp_secret = Some(secret);
                         self.mcp_enabled = true;
                         self.mcp_started_at = Some(Instant::now());
-                        self.status = format!("MCP server ready on port {} — serving '{}'", actual_port, self.tabs[self.active.unwrap()].doc.file_name);
-                        info!("MCP server started on port {} (secret {})", actual_port, self.mcp_secret.as_deref().unwrap_or(""));
+                        self.status = format!(
+                            "MCP server ready on port {} — serving '{}'",
+                            actual_port,
+                            self.tabs[self.active.unwrap()].doc.file_name
+                        );
+                        info!(
+                            "MCP server started on port {} (secret {})",
+                            actual_port,
+                            self.mcp_secret.as_deref().unwrap_or("")
+                        );
                     }
                     Ok(Err(e)) => {
                         // Bind failed — clean up and show popup
@@ -1341,10 +1592,20 @@ impl LogotomyApp {
                 guard.set_active_doc(Arc::clone(&self.tabs[new_idx].doc));
                 // Seed `_active` filters from the newly served tab
                 // (GUI-originated → clear the MCP→GUI dirty flag).
-                let texts: Vec<String> = self.tabs[new_idx].filters.iter().map(|f| f.text.clone()).collect();
+                let texts: Vec<String> = self.tabs[new_idx]
+                    .filters
+                    .iter()
+                    .map(|f| f.text.clone())
+                    .collect();
                 guard.set_filters("_active", texts);
                 guard.filters_dirty.store(false, Ordering::Relaxed);
-                info!("MCP: switched active doc to tab {} ({})", new_idx, self.tabs[new_idx].doc.file_name);
+                info!(
+                    "MCP: switched active doc to tab {} ({})",
+                    new_idx, self.tabs[new_idx].doc.file_name
+                );
+                let served_name = self.tabs[new_idx].doc.file_name.clone();
+                drop(guard);
+                self.show_toast(format!("MCP now serving '{served_name}'"));
             }
         }
     }
@@ -1356,8 +1617,12 @@ impl LogotomyApp {
     }
 
     pub fn save_filter(&mut self, filter_name: &str) {
-        if filter_name.is_empty() { return; }
-        let Some(active_tab) = self.active.and_then(|i| self.tabs.get(i)) else { return };
+        if filter_name.is_empty() {
+            return;
+        }
+        let Some(active_tab) = self.active.and_then(|i| self.tabs.get(i)) else {
+            return;
+        };
         let filters: Vec<String> = active_tab.filters.iter().map(|k| k.text.clone()).collect();
         let filter = SavedFilter { filters };
         let filter_path = Settings::filters_dir().join(format!("{filter_name}.json"));
@@ -1376,7 +1641,9 @@ impl LogotomyApp {
     }
 
     pub fn rename_filter(&mut self, old_name: &str, new_name: &str) {
-        if old_name == new_name || new_name.is_empty() { return; }
+        if old_name == new_name || new_name.is_empty() {
+            return;
+        }
         let old_path = Settings::filters_dir().join(format!("{old_name}.json"));
         let new_path = Settings::filters_dir().join(format!("{new_name}.json"));
         if new_path.exists() {
@@ -1401,11 +1668,27 @@ impl LogotomyApp {
 mod tests {
     use super::*;
 
+    #[test]
+    fn gui_mcp_instruction_is_actionable_and_safe() {
+        let prompt =
+            LogotomyApp::build_mcp_instruction("http://127.0.0.1:4321/123456", "/tmp/example.log");
+        assert!(prompt.contains("http://127.0.0.1:4321/123456"));
+        assert!(prompt.contains("/tmp/example.log"));
+        assert!(prompt.contains("GUI mode"));
+        assert!(prompt.contains("do not call load_log"));
+        assert!(prompt.contains("with_filtered_log=false"));
+        assert!(prompt.contains("local secret"));
+    }
+
     fn write_temp(content: &str) -> PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!("logotomy_app_model_test_{}_{}.log", std::process::id(), n));
+        let path = std::env::temp_dir().join(format!(
+            "logotomy_app_model_test_{}_{}.log",
+            std::process::id(),
+            n
+        ));
         std::fs::write(&path, content).unwrap();
         path
     }
@@ -1413,7 +1696,9 @@ mod tests {
     #[test]
     fn doc_format_summary_reports_format_and_date() {
         // JSON: field-based timestamp (no positional date format).
-        let json_path = write_temp("{\"time\": \"2026-08-15T19:40:01Z\", \"lvl\": 30, \"msg\": \"Page load\"}\n");
+        let json_path = write_temp(
+            "{\"time\": \"2026-08-15T19:40:01Z\", \"lvl\": 30, \"msg\": \"Page load\"}\n",
+        );
         let json_doc = LogDocument::open(&json_path).unwrap();
         assert_eq!(
             doc_format_summary(&json_doc),
@@ -1431,10 +1716,7 @@ mod tests {
         // CEF: timeless.
         let cef_path = write_temp("CEF:0|Vendor|Product|1.0|100|Name|3|spt=443\n");
         let cef_doc = LogDocument::open(&cef_path).unwrap();
-        assert_eq!(
-            doc_format_summary(&cef_doc),
-            "format: cef · date: none"
-        );
+        assert_eq!(doc_format_summary(&cef_doc), "format: cef · date: none");
 
         std::fs::remove_file(json_path).ok();
         std::fs::remove_file(plain_path).ok();
@@ -1452,8 +1734,14 @@ mod tests {
         let mut tab = LogTab::new(doc);
 
         // Add two filters.
-        tab.filters.push(Filter { text: "alpha".into(), color: Theme::light().filter_colors[0] });
-        tab.filters.push(Filter { text: "beta".into(), color: Theme::light().filter_colors[1] });
+        tab.filters.push(Filter {
+            text: "alpha".into(),
+            color: Theme::light().filter_colors[0],
+        });
+        tab.filters.push(Filter {
+            text: "beta".into(),
+            color: Theme::light().filter_colors[1],
+        });
         tab.rescan_filters();
         // Poll until the background scan lands.
         for _ in 0..100 {
@@ -1492,7 +1780,10 @@ mod tests {
         let doc = LogDocument::open(&path).unwrap();
         let mut tab = LogTab::new(doc);
 
-        tab.filters.push(Filter { text: "alpha".into(), color: Theme::light().filter_colors[0] });
+        tab.filters.push(Filter {
+            text: "alpha".into(),
+            color: Theme::light().filter_colors[0],
+        });
         tab.rescan_filters();
         for _ in 0..100 {
             if !tab.poll_search() {
@@ -1527,8 +1818,14 @@ mod tests {
         let doc = LogDocument::open(&path).unwrap();
         let mut tab = LogTab::new(doc);
 
-        tab.filters.push(Filter { text: "alpha".into(), color: Theme::light().filter_colors[0] });
-        tab.filters.push(Filter { text: "beta".into(), color: Theme::light().filter_colors[1] });
+        tab.filters.push(Filter {
+            text: "alpha".into(),
+            color: Theme::light().filter_colors[0],
+        });
+        tab.filters.push(Filter {
+            text: "beta".into(),
+            color: Theme::light().filter_colors[1],
+        });
         tab.rescan_filters();
         for _ in 0..100 {
             if !tab.poll_search() {
@@ -1536,15 +1833,27 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(tab.lane_active.iter().all(|&a| a), "new filters start visible");
+        assert!(
+            tab.lane_active.iter().all(|&a| a),
+            "new filters start visible"
+        );
         let ee_before = tab.everything_else_active;
 
         tab.toggle_all_lanes();
-        assert!(tab.lane_active.iter().all(|&a| !a), "toggle-all hides every lane");
-        assert_eq!(tab.everything_else_active, ee_before, "Everything Else is never toggled");
+        assert!(
+            tab.lane_active.iter().all(|&a| !a),
+            "toggle-all hides every lane"
+        );
+        assert_eq!(
+            tab.everything_else_active, ee_before,
+            "Everything Else is never toggled"
+        );
 
         tab.toggle_all_lanes();
-        assert!(tab.lane_active.iter().all(|&a| a), "toggle-all restores every lane");
+        assert!(
+            tab.lane_active.iter().all(|&a| a),
+            "toggle-all restores every lane"
+        );
 
         std::fs::remove_file(path).ok();
     }
@@ -1555,7 +1864,10 @@ mod tests {
         let doc = LogDocument::open(&path).unwrap();
         let mut tab = LogTab::new(doc);
 
-        tab.filters.push(Filter { text: "alpha".into(), color: Theme::light().filter_colors[0] });
+        tab.filters.push(Filter {
+            text: "alpha".into(),
+            color: Theme::light().filter_colors[0],
+        });
         tab.rescan_filters();
         for _ in 0..100 {
             if !tab.poll_search() {
@@ -1584,8 +1896,14 @@ mod tests {
         let doc = LogDocument::open(&path).unwrap();
         let mut tab = LogTab::new(doc);
 
-        tab.filters.push(Filter { text: "alpha".into(), color: Theme::light().filter_colors[0] });
-        tab.filters.push(Filter { text: "beta".into(), color: Theme::light().filter_colors[1] });
+        tab.filters.push(Filter {
+            text: "alpha".into(),
+            color: Theme::light().filter_colors[0],
+        });
+        tab.filters.push(Filter {
+            text: "beta".into(),
+            color: Theme::light().filter_colors[1],
+        });
         tab.rescan_filters();
         for _ in 0..100 {
             if !tab.poll_search() {
@@ -1605,7 +1923,10 @@ mod tests {
         }
         assert!(tab.filters.is_empty());
         assert!(tab.matches.is_empty());
-        assert!(tab.everything_else_active, "Everything Else must be re-enabled after clearing all filters");
+        assert!(
+            tab.everything_else_active,
+            "Everything Else must be re-enabled after clearing all filters"
+        );
 
         std::fs::remove_file(path).ok();
     }
@@ -1624,7 +1945,9 @@ mod tests {
 
         // Confirm we're on a time domain and grab its absolute bounds.
         let (full_start, _full_end) = match tab.timeline.domain {
-            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => (start_ms, end_ms),
+            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => {
+                (start_ms, end_ms)
+            }
             _ => panic!("expected time domain"),
         };
 
@@ -1658,7 +1981,9 @@ mod tests {
         let mut tab = LogTab::new(doc);
 
         let (full_start, _full_end) = match tab.timeline.domain {
-            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => (start_ms, end_ms),
+            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => {
+                (start_ms, end_ms)
+            }
             _ => panic!("expected time domain"),
         };
 
@@ -1672,12 +1997,18 @@ mod tests {
         tab.timeline_zoom = Some((full_start + 5_000, full_start + 25_000));
         tab.viewport_range = Some((2, 3)); // +20000..+30000ms, pokes past +25000
         tab.ensure_viewport_visible();
-        assert_eq!(tab.timeline_zoom, Some((full_start + 5_000, full_start + 25_000)));
+        assert_eq!(
+            tab.timeline_zoom,
+            Some((full_start + 5_000, full_start + 25_000))
+        );
 
         // Case 3: no viewport range -> unchanged (early return).
         tab.viewport_range = None;
         tab.ensure_viewport_visible();
-        assert_eq!(tab.timeline_zoom, Some((full_start + 5_000, full_start + 25_000)));
+        assert_eq!(
+            tab.timeline_zoom,
+            Some((full_start + 5_000, full_start + 25_000))
+        );
 
         std::fs::remove_file(path).ok();
     }
@@ -1697,7 +2028,9 @@ mod tests {
         let doc = LogDocument::open(&path).unwrap();
         let mut tab = LogTab::new(doc);
         let (full_start, _full_end) = match tab.timeline.domain {
-            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => (start_ms, end_ms),
+            logotomy::core::timeline::TimelineDomain::Time { start_ms, end_ms } => {
+                (start_ms, end_ms)
+            }
             _ => panic!("expected time domain"),
         };
         tab.timeline_zoom = Some((full_start, full_start + 40_000));
@@ -1752,13 +2085,31 @@ mod tests {
 
         tab.clamp_view_state();
 
-        for v in [tab.context_line, tab.pending_scroll, tab.preserve_anchor,
-                  tab.drag_start_line, tab.drag_current_line].iter().flatten() {
+        for v in [
+            tab.context_line,
+            tab.pending_scroll,
+            tab.preserve_anchor,
+            tab.drag_start_line,
+            tab.drag_current_line,
+        ]
+        .iter()
+        .flatten()
+        {
             assert!(*v < before, "position index {v} not clamped to < {before}");
         }
-        for (a, b) in [tab.viewport_range, tab.pin_modal,
-                       tab.selection_range, tab.pending_selection].iter().flatten() {
-            assert!(*a < before && *b < before, "range ({a},{b}) not clamped to < {before}");
+        for (a, b) in [
+            tab.viewport_range,
+            tab.pin_modal,
+            tab.selection_range,
+            tab.pending_selection,
+        ]
+        .iter()
+        .flatten()
+        {
+            assert!(
+                *a < before && *b < before,
+                "range ({a},{b}) not clamped to < {before}"
+            );
         }
         std::fs::remove_file(path).ok();
     }
@@ -1853,7 +2204,9 @@ mod tests {
         // automaton used to be case-sensitive, highlighting only the exact-case
         // occurrence).
         tab.set_keyword_highlight(Some("Error".to_string()));
-        let ac = tab.keyword_automaton.expect("keyword automaton must be built");
+        let ac = tab
+            .keyword_automaton
+            .expect("keyword automaton must be built");
         assert!(ac.find_iter("Error starting").next().is_some());
         assert!(ac.find_iter("error retry").next().is_some());
         assert!(ac.find_iter("ERROR final").next().is_some());
@@ -1882,7 +2235,10 @@ pub fn apply_filter_to_tab(tab: &mut LogTab, filter_name: &str, theme: &Theme) {
                 }
                 tab.applied_filter = Some(filter_name.to_string());
                 tab.rescan_filters();
-                info!("applied filter '{filter_name}' to tab '{}'", tab.doc.file_name);
+                info!(
+                    "applied filter '{filter_name}' to tab '{}'",
+                    tab.doc.file_name
+                );
             }
             Err(e) => error!("failed to parse filter '{filter_name}': {e}"),
         },

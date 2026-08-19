@@ -8,9 +8,8 @@ use regex::Regex;
 
 use super::{window, TimeFormat};
 
-static RE_LOGCAT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3}").unwrap()
-});
+static RE_LOGCAT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3}").unwrap());
 
 /// Android logcat threadtime `07-15 22:00:01.123` timestamps (yearless).
 pub struct LogcatThreadtime;

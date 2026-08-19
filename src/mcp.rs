@@ -120,7 +120,10 @@ impl log::Log for FileLogger {
         let millis = ms % 1000;
         let line = format!(
             "[{:02}:{:02}:{:02}.{:03}] {} {}\n",
-            h, m, s, millis,
+            h,
+            m,
+            s,
+            millis,
             record.level(),
             record.args()
         );
@@ -129,7 +132,9 @@ impl log::Log for FileLogger {
             .append(true)
             .write(true)
             .open(&self.path)
-            .map(|mut f| { let _ = f.write_all(line.as_bytes()); });
+            .map(|mut f| {
+                let _ = f.write_all(line.as_bytes());
+            });
     }
 
     fn flush(&self) {}
@@ -144,23 +149,31 @@ fn log_init() -> String {
     let path_str = path.to_string_lossy().to_string();
 
     // Write header (append-only; never truncate).
-    let header = format!("=== logotomy-mcp started (PID {}) ===\n", std::process::id());
+    let header = format!(
+        "=== logotomy-mcp started (PID {}) ===\n",
+        std::process::id()
+    );
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .write(true)
         .open(&path)
-        .map(|mut f| { let _ = f.write_all(header.as_bytes()); });
+        .map(|mut f| {
+            let _ = f.write_all(header.as_bytes());
+        });
 
     // Store the log path for later retrieval.
     let _ = LOG_PATH.set(path_str.clone());
 
     // Build a custom multi-target logger that writes to both stderr and the file.
-    let file_logger = FileLogger { path: path_str.clone() };
-    let stderr_logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .target(env_logger::Target::Stderr)
-        .format_timestamp_millis()
-        .build();
+    let file_logger = FileLogger {
+        path: path_str.clone(),
+    };
+    let stderr_logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .target(env_logger::Target::Stderr)
+            .format_timestamp_millis()
+            .build();
 
     struct MultiLogger {
         file: FileLogger,
@@ -283,10 +296,14 @@ impl ServerState {
         } else {
             self.get_doc(log_id)?
         };
-        let matches = search::scan_document(doc.as_ref(), &[keyword.to_string()], &AtomicBool::new(false))
-            .into_iter()
-            .next()
-            .unwrap_or_default();
+        let matches = search::scan_document(
+            doc.as_ref(),
+            &[keyword.to_string()],
+            &AtomicBool::new(false),
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_default();
         let matches = Arc::new(matches);
         self.match_cache.insert(key, Arc::clone(&matches));
         Ok(matches)
@@ -454,7 +471,11 @@ pub fn run_stdio(state: Arc<Mutex<ServerState>>) {
         let Some(id) = msg.get("id").cloned() else {
             continue;
         };
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
+        let method = msg
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
         log::info!("stdio request: method={method} id={}", json_id(&id));
@@ -470,7 +491,10 @@ pub fn run_stdio(state: Arc<Mutex<ServerState>>) {
             }
         };
         let elapsed = start.elapsed();
-        log::info!("stdio response: method={method} elapsed={}ms", elapsed.as_millis());
+        log::info!(
+            "stdio response: method={method} elapsed={}ms",
+            elapsed.as_millis()
+        );
         let _ = writeln!(out, "{}", response);
         let _ = out.flush();
     }
@@ -515,7 +539,10 @@ pub fn run_http(
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--status-file") {
         if let Some(path) = args.get(pos + 1) {
-            let _ = std::fs::write(path, format!("PORT {actual_port}\nREADY\nLOG {}\n", log_path()));
+            let _ = std::fs::write(
+                path,
+                format!("PORT {actual_port}\nREADY\nLOG {}\n", log_path()),
+            );
         }
     }
 
@@ -587,8 +614,16 @@ fn resolve_route(path: &str, secret: Option<&str>) -> Option<String> {
 }
 
 /// Handle a single HTTP client connection (Streamable MCP transport).
-fn handle_http_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>, secret: Option<String>) {
-    let peer = stream.peer_addr().ok().map(|a| a.to_string()).unwrap_or_default();
+fn handle_http_client(
+    mut stream: TcpStream,
+    state: Arc<Mutex<ServerState>>,
+    secret: Option<String>,
+) {
+    let peer = stream
+        .peer_addr()
+        .ok()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
     log::info!("HTTP connection from {peer}");
 
     let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
@@ -648,7 +683,8 @@ fn handle_http_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>, sec
             match route.as_str() {
                 "/" | "/health" => {
                     let body = json!({ "status": "ok", "server": "logotomy-mcp" }).to_string();
-                    let resp = http_response(200, "OK", &body, &[("Content-Type", "application/json")]);
+                    let resp =
+                        http_response(200, "OK", &body, &[("Content-Type", "application/json")]);
                     let _ = stream.write_all(resp.as_bytes());
                     let _ = stream.flush();
                     log::info!("{peer}: 200 GET {path}");
@@ -661,11 +697,16 @@ fn handle_http_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>, sec
                         _ => "/messages".to_string(),
                     };
                     let body = format!("event: endpoint\r\ndata: {messages_endpoint}\r\n\r\n");
-                    let resp = http_response(200, "OK", &body, &[
-                        ("Content-Type", "text/event-stream"),
-                        ("Cache-Control", "no-cache"),
-                        ("Connection", "keep-alive"),
-                    ]);
+                    let resp = http_response(
+                        200,
+                        "OK",
+                        &body,
+                        &[
+                            ("Content-Type", "text/event-stream"),
+                            ("Cache-Control", "no-cache"),
+                            ("Connection", "keep-alive"),
+                        ],
+                    );
                     let _ = stream.write_all(resp.as_bytes());
                     let _ = stream.flush();
                     log::info!("{peer}: 200 SSE response");
@@ -703,9 +744,15 @@ fn handle_http_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>, sec
         let mut offset = 0;
         while offset < content_length {
             match reader.read(&mut buf[offset..]) {
-                Ok(0) => { log::warn!("{peer}: unexpected EOF reading body"); break; }
+                Ok(0) => {
+                    log::warn!("{peer}: unexpected EOF reading body");
+                    break;
+                }
                 Ok(n) => offset += n,
-                Err(e) => { log::error!("{peer}: body read error: {e}"); break; }
+                Err(e) => {
+                    log::error!("{peer}: body read error: {e}");
+                    break;
+                }
             }
         }
         if offset == content_length {
@@ -716,7 +763,12 @@ fn handle_http_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>, sec
     let start = std::time::Instant::now();
     let Ok(msg) = serde_json::from_str::<Value>(&body) else {
         log::warn!("{peer}: failed to parse JSON-RPC body");
-        let resp = http_response(400, "Bad Request", r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#, &[("Content-Type", "application/json")]);
+        let resp = http_response(
+            400,
+            "Bad Request",
+            r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#,
+            &[("Content-Type", "application/json")],
+        );
         let _ = stream.write_all(resp.as_bytes());
         let _ = stream.flush();
         return;
@@ -731,10 +783,17 @@ fn handle_http_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>, sec
     }
 
     let id = msg.get("id").cloned().unwrap_or(Value::Null);
-    let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
+    let method = msg
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
-    log::info!("{peer}: JSON-RPC request: method={method} id={}", json_id(&id));
+    log::info!(
+        "{peer}: JSON-RPC request: method={method} id={}",
+        json_id(&id)
+    );
 
     let response = {
         let mut guard = state.lock().unwrap();
@@ -748,9 +807,17 @@ fn handle_http_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>, sec
     };
 
     let elapsed = start.elapsed();
-    log::info!("{peer}: JSON-RPC response: method={method} elapsed={}ms", elapsed.as_millis());
+    log::info!(
+        "{peer}: JSON-RPC response: method={method} elapsed={}ms",
+        elapsed.as_millis()
+    );
 
-    let resp = http_response(200, "OK", &response, &[("Content-Type", "application/json")]);
+    let resp = http_response(
+        200,
+        "OK",
+        &response,
+        &[("Content-Type", "application/json")],
+    );
     let _ = stream.write_all(resp.as_bytes());
     let _ = stream.flush();
 }
@@ -803,7 +870,8 @@ fn initialize_result(params: &Value) -> Value {
         "serverInfo": {
             "name": "logotomy-mcp",
             "version": env!("CARGO_PKG_VERSION"),
-        }
+        },
+        "instructions": "Choose the workflow from the server context: in headless mode call load_log first; in GUI mode the selected log is already attached, so do not call load_log. In GUI mode start with summarize_log using with_filtered_log=false unless the current GUI filters are intentionally relevant. The default with_filtered_log=true requires at least one filters_add filter; pass false for full-file analysis. Use find_occurrences, get_template_anomalies, get_timeline_histogram, get_template_samples, and raw_log to investigate; narrow ranges before requesting raw lines. Line bounds are 1-based and time bounds accept RFC3339 or epoch milliseconds."
     })
 }
 
@@ -827,14 +895,23 @@ fn tool_ok(payload: Value) -> Value {
 }
 
 fn tool_err(message: &str) -> Value {
+    let payload = json!({
+        "error": "tool_error",
+        "message": message,
+        "retryable": false
+    });
     json!({
-        "content": [{ "type": "text", "text": message }],
+        "content": [{ "type": "text", "text": payload.to_string() }],
         "isError": true
     })
 }
 
 fn handle_tool_call(id: Value, params: &Value, state: &mut ServerState) -> String {
-    let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     log::info!("tool call: {name}");
     let result = dispatch(&name, &args, state);
@@ -843,7 +920,7 @@ fn handle_tool_call(id: Value, params: &Value, state: &mut ServerState) -> Strin
         Err(e) => {
             log::error!("tool error: {name}: {e}");
             tool_err(&e)
-        },
+        }
     };
     ok(id, payload)
 }
@@ -896,11 +973,15 @@ fn arg_log_id(args: &Value) -> Result<&str, String> {
     arg_str(args, "log_id")
 }
 
-fn arg_usize(args: &Value, key: &str, default: usize) -> usize {
-    args.get(key)
-        .and_then(Value::as_u64)
-        .map(|n| n as usize)
-        .unwrap_or(default)
+fn arg_usize(args: &Value, key: &str, default: usize) -> Result<usize, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| format!("argument '{key}' must be a non-negative integer")),
+        Some(_) => Err(format!("argument '{key}' must be a non-negative integer")),
+    }
 }
 
 fn arg_time(args: &Value, key: &str) -> Result<Option<i64>, String> {
@@ -913,7 +994,9 @@ fn arg_time(args: &Value, key: &str) -> Result<Option<i64>, String> {
         Some(Value::String(s)) => parse_time_param(s)
             .map(Some)
             .ok_or_else(|| format!("argument '{key}': cannot parse '{s}' as time")),
-        _ => Err(format!("argument '{key}' must be a time string or epoch millis")),
+        _ => Err(format!(
+            "argument '{key}' must be a time string or epoch millis"
+        )),
     }
 }
 
@@ -1128,7 +1211,12 @@ fn with_filtered_log(args: &Value) -> bool {
 fn no_filtered_log_payload() -> Value {
     json!({
         "comment": "no log",
-        "reason": "with_filtered_log=true and no filter count = 0, so no log. Try with with_filtered_log=false for full log file traversal or add filter (tool: filters_add)"
+        "reason": "with_filtered_log=true and no filters are configured, so the filtered view is empty",
+        "filter_count": 0,
+        "suggested_next_calls": [
+            { "tool": "summarize_log", "arguments": { "with_filtered_log": false }, "purpose": "analyze the full log" },
+            { "tool": "filters_add", "arguments": { "filter_text": "ERROR" }, "purpose": "create a filtered investigation scope" }
+        ]
     })
 }
 
@@ -1252,8 +1340,7 @@ fn resolve_bound(
             Ok(Some((line - 1).min(n - 1)))
         }
         Some(Value::String(s)) => {
-            let t = parse_time_param(s)
-                .ok_or_else(|| format!("cannot parse '{s}' as a time"))?;
+            let t = parse_time_param(s).ok_or_else(|| format!("cannot parse '{s}' as a time"))?;
             // ts_at is forward-filled and monotonically non-decreasing, so a
             // binary search finds the boundary in O(log n).
             if is_end {
@@ -1485,10 +1572,13 @@ fn find_occurrences_payload(
 ) -> Result<Value, String> {
     let after = arg_time(args, "after")?;
     let before = arg_time(args, "before")?;
-    let max_results = arg_usize(args, "max_results", 50).min(HARD_MAX_LINES);
-    let offset = arg_usize(args, "offset", 0);
-    let format = args.get("format").and_then(Value::as_str).unwrap_or("lines");
-    let context = arg_usize(args, "context", 0).min(MAX_CONTEXT);
+    let max_results = arg_usize(args, "max_results", 50)?.min(HARD_MAX_LINES);
+    let offset = arg_usize(args, "offset", 0)?;
+    let format = args
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or("lines");
+    let context = arg_usize(args, "context", 0)?.min(MAX_CONTEXT);
     // Optional time-window filter (after/before) on forward-filled timestamps,
     // intersected with the filtered view when one is active.
     let windowed: Vec<usize> = matches
@@ -1679,9 +1769,7 @@ fn tool_summarize(args: &Value, state: &mut ServerState) -> Result<Value, String
     let time_gaps: Vec<Value> = gaps
         .iter()
         .take(3)
-        .map(|&(gap, i)| {
-            json!({ "line": i + 1, "time": fmt_ts(doc.ts_at(i)), "gap_ms": gap })
-        })
+        .map(|&(gap, i)| json!({ "line": i + 1, "time": fmt_ts(doc.ts_at(i)), "gap_ms": gap }))
         .collect();
 
     // Densest 60-second window within the analysed (possibly filtered) range.
@@ -1727,13 +1815,18 @@ fn tool_summarize(args: &Value, state: &mut ServerState) -> Result<Value, String
         None => range_time(&doc, lo, hi),
     }
     .map(|(a, b)| {
-            json!({
-                "start": format_ms(a), "end": format_ms(b),
-                "start_epoch_ms": a, "end_epoch_ms": b,
-            })
+        json!({
+            "start": format_ms(a), "end": format_ms(b),
+            "start_epoch_ms": a, "end_epoch_ms": b,
         })
-        .unwrap_or(Value::Null);
-    out["template_count"] = json!(ranked.len());
+    })
+    .unwrap_or(Value::Null);
+    // Keep template_count consistent with load_log/doc_stats: it describes the
+    // indexed document. The number that actually contributed to this analysis
+    // is reported separately, which avoids confusing 116-vs-115 results when
+    // a range or filter excludes templates.
+    out["template_count"] = json!(doc.templates.len());
+    out["matched_template_count"] = json!(ranked.len());
     out["top_templates"] = json!(top_templates);
     out["window"] = json!({ "start_line": lo + 1, "end_line": hi });
     out["error_template_count"] = json!(err_tpls.len());
@@ -1742,11 +1835,9 @@ fn tool_summarize(args: &Value, state: &mut ServerState) -> Result<Value, String
     out["largest_time_gaps"] = json!(time_gaps);
     out["densest_minute"] = densest.unwrap_or(Value::Null);
     // Budget estimates folded in from the former `log_size` tool.
-    out["template_size_bytes"] = json!(
-        serde_json::to_vec(&template_dict(&doc, None))
-            .map(|v| v.len())
-            .unwrap_or(0)
-    );
+    out["template_size_bytes"] = json!(serde_json::to_vec(&template_dict(&doc, None))
+        .map(|v| v.len())
+        .unwrap_or(0));
     out["sequence_estimate_bytes"] = json!(doc.total_lines().saturating_mul(SEQ_BYTES_PER_ENTRY));
     if log_id != "_active" {
         out["log_id"] = json!(log_id);
@@ -1820,7 +1911,7 @@ fn tool_log_sequence(args: &Value, state: &mut ServerState) -> Result<Value, Str
         return Err("log is empty".to_string());
     }
     let (lo, hi) = resolve_range(args, &doc)?;
-    let max_entries = arg_usize(args, "max_entries", HARD_MAX_SEQUENCE).min(HARD_MAX_SEQUENCE);
+    let max_entries = arg_usize(args, "max_entries", HARD_MAX_SEQUENCE)?.min(HARD_MAX_SEQUENCE);
     let collapse = args
         .get("collapse")
         .and_then(Value::as_bool)
@@ -1909,7 +2000,7 @@ fn tool_raw_log(args: &Value, state: &mut ServerState) -> Result<Value, String> 
         return Err("end is before start".to_string());
     }
     let hi = (end + 1).min(doc.total_lines());
-    let max_lines = arg_usize(args, "max_lines", HARD_MAX_LINES).min(HARD_MAX_LINES);
+    let max_lines = arg_usize(args, "max_lines", HARD_MAX_LINES)?.min(HARD_MAX_LINES);
     // `total` counts only the filtered lines in the window when a filtered
     // view is active.
     let (total, lines): (usize, Vec<Value>) = match &vis {
@@ -1993,7 +2084,7 @@ fn tool_timeline_histogram(args: &Value, state: &mut ServerState) -> Result<Valu
         return Err("log is empty".to_string());
     }
     let (lo, hi) = resolve_range(args, &doc)?;
-    let nb = arg_usize(args, "buckets", 50).clamp(16, 1024);
+    let nb = arg_usize(args, "buckets", 50)?.clamp(16, 1024);
     let keyword = args.get("keyword").and_then(Value::as_str);
     let template_id = args
         .get("template_id")
@@ -2145,7 +2236,7 @@ fn tool_template_anomalies(args: &Value, state: &mut ServerState) -> Result<Valu
         return Err("log is empty".to_string());
     }
     let (lo, hi) = resolve_range(args, &doc)?;
-    let limit = arg_usize(args, "limit", 50);
+    let limit = arg_usize(args, "limit", 50)?;
 
     // The analysis window below spans only the filtered lines.
     let (vis_a, vis_b) = match &vis {
@@ -2279,7 +2370,7 @@ fn tool_template_samples(args: &Value, state: &mut ServerState) -> Result<Value,
         .and_then(Value::as_u64)
         .ok_or_else(|| "missing or invalid argument 'template_id' (integer expected)".to_string())?
         as u32;
-    let n_samples = arg_usize(args, "n", 3).clamp(1, 10);
+    let n_samples = arg_usize(args, "n", 3)?.clamp(1, 10);
     let strategy = args
         .get("strategy")
         .and_then(Value::as_str)
@@ -2372,11 +2463,39 @@ fn tool_template_samples(args: &Value, state: &mut ServerState) -> Result<Value,
 // -------------------------------------------------------------- tool schema
 
 fn tools(state: &ServerState) -> Value {
-    if state.is_gui_mode() {
+    let mut tools = if state.is_gui_mode() {
         gui_tools()
     } else {
         headless_tools()
+    };
+    if let Some(list) = tools.as_array_mut() {
+        for tool in list {
+            let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+            let read_only = !matches!(
+                name,
+                "load_log" | "close_log" | "filters_add" | "filters_remove" | "trim"
+            );
+            let idempotent = matches!(
+                name,
+                "list_logs"
+                    | "filters_get"
+                    | "summarize_log"
+                    | "get_timeline_histogram"
+                    | "get_template"
+                    | "get_template_samples"
+                    | "log_sequence"
+                    | "raw_log"
+                    | "find_occurrences"
+            );
+            tool["annotations"] = json!({
+                "readOnlyHint": read_only,
+                "destructiveHint": matches!(name, "close_log" | "trim"),
+                "idempotentHint": idempotent,
+                "openWorldHint": false
+            });
+        }
     }
+    tools
 }
 
 /// Schemas for the compression-first tools. `log_id_prop` is `Some` in
@@ -2504,7 +2623,8 @@ fn headless_tools() -> Value {
         })
     };
     let log_id_prop = json!({ "type": "string", "description": "ID returned by load_log" });
-    let keyword_prop = json!({ "type": "string", "description": "Exact phrase to search for (case-sensitive)" });
+    let keyword_prop =
+        json!({ "type": "string", "description": "Exact phrase to search for (case-sensitive)" });
     let filter_prop = json!({
         "type": "boolean",
         "description": "When true (default), operate on the filtered log — only lines matching the current filter set (the union of filters_get matches; the 'Everything Else' lane is never included). With zero filters the tool replies {comment: 'no log'} instead of scanning — set false for the full log or add a filter first (filters_add)."
@@ -2570,7 +2690,8 @@ fn gui_tools() -> Value {
             "description": format!("{desc} (RFC3339, 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD', or epoch millis)")
         })
     };
-    let keyword_prop = json!({ "type": "string", "description": "Exact phrase to search for (case-sensitive)" });
+    let keyword_prop =
+        json!({ "type": "string", "description": "Exact phrase to search for (case-sensitive)" });
     let filter_prop = json!({
         "type": "boolean",
         "description": "When true (default), operate on the filtered log — only lines matching the current filter set (the union of filters_get matches; the 'Everything Else' lane is never included). With zero filters the tool replies {comment: 'no log'} instead of scanning — set false for the full log or add a filter first (filters_add)."
@@ -2625,16 +2746,28 @@ mod tests {
         assert_eq!(resolve_route("/", None), Some("/".to_string()));
         assert_eq!(resolve_route("/health", None), Some("/health".to_string()));
         assert_eq!(resolve_route("/sse", None), Some("/sse".to_string()));
-        assert_eq!(resolve_route("/messages", None), Some("/messages".to_string()));
+        assert_eq!(
+            resolve_route("/messages", None),
+            Some("/messages".to_string())
+        );
     }
 
     #[test]
     fn resolve_route_with_secret_strips_token() {
         let secret = Some("123456");
         assert_eq!(resolve_route("/123456", secret), Some("/".to_string()));
-        assert_eq!(resolve_route("/123456/messages", secret), Some("/messages".to_string()));
-        assert_eq!(resolve_route("/123456/sse", secret), Some("/sse".to_string()));
-        assert_eq!(resolve_route("/123456/health", secret), Some("/health".to_string()));
+        assert_eq!(
+            resolve_route("/123456/messages", secret),
+            Some("/messages".to_string())
+        );
+        assert_eq!(
+            resolve_route("/123456/sse", secret),
+            Some("/sse".to_string())
+        );
+        assert_eq!(
+            resolve_route("/123456/health", secret),
+            Some("/health".to_string())
+        );
     }
 
     #[test]
@@ -2648,11 +2781,29 @@ mod tests {
 
     #[test]
     fn resolve_route_ignores_query_string() {
-        assert_eq!(resolve_route("/health?x=1", None), Some("/health".to_string()));
+        assert_eq!(
+            resolve_route("/health?x=1", None),
+            Some("/health".to_string())
+        );
         assert_eq!(
             resolve_route("/123456/messages?foo=bar", Some("123456")),
             Some("/messages".to_string())
         );
+    }
+
+    #[test]
+    fn initialize_instructions_explain_headless_and_gui_workflows() {
+        let result = initialize_result(&json!({"protocolVersion": "2025-06-18"}));
+        let instructions = result["instructions"].as_str().unwrap();
+
+        assert!(instructions.contains("in headless mode call load_log first"));
+        assert!(instructions.contains("in GUI mode the selected log is already attached"));
+        assert!(instructions.contains("do not call load_log"));
+        assert!(instructions.contains("summarize_log using with_filtered_log=false"));
+        assert!(instructions.contains("get_template_anomalies"));
+        assert!(instructions.contains("get_timeline_histogram"));
+        assert!(instructions.contains("get_template_samples"));
+        assert!(instructions.contains("raw_log"));
     }
 
     /// Error (4xx/5xx) HTTP responses must carry `Connection: close` so clients
@@ -2661,7 +2812,10 @@ mod tests {
     #[test]
     fn http_response_error_statuses_send_connection_close() {
         let four04 = http_response(404, "Not Found", "Not Found", &[]);
-        assert!(four04.contains("Connection: close"), "404 missing close: {four04}");
+        assert!(
+            four04.contains("Connection: close"),
+            "404 missing close: {four04}"
+        );
         assert!(four04.starts_with("HTTP/1.1 404 Not Found\r\n"));
         assert!(
             http_response(400, "Bad Request", "", &[]).contains("Connection: close"),
@@ -2712,13 +2866,25 @@ mod tests {
 
         // Missing secret prefix entirely — the reported hang case.
         let resp = send_get(b"GET /health HTTP/1.1\r\nHost: x\r\nAccept: */*\r\n\r\n");
-        assert!(resp.starts_with("HTTP/1.1 404"), "expected 404, got: {resp}");
-        assert!(resp.contains("Connection: close"), "no Connection: close: {resp}");
+        assert!(
+            resp.starts_with("HTTP/1.1 404"),
+            "expected 404, got: {resp}"
+        );
+        assert!(
+            resp.contains("Connection: close"),
+            "no Connection: close: {resp}"
+        );
 
         // Wrong secret token also rejected with 404 + close.
         let resp = send_get(b"GET /999999/health HTTP/1.1\r\nHost: x\r\n\r\n");
-        assert!(resp.starts_with("HTTP/1.1 404"), "expected 404, got: {resp}");
-        assert!(resp.contains("Connection: close"), "no Connection: close: {resp}");
+        assert!(
+            resp.starts_with("HTTP/1.1 404"),
+            "expected 404, got: {resp}"
+        );
+        assert!(
+            resp.contains("Connection: close"),
+            "no Connection: close: {resp}"
+        );
 
         shutdown.store(true, Ordering::Relaxed);
         handler.join().unwrap();
@@ -2859,11 +3025,15 @@ mod tests {
     fn repetitive_log() -> String {
         let mut s = String::new();
         for i in 0..10 {
-            s.push_str(&format!("2026-07-19T10:00:{i:02}.000Z INFO request completed in {i}ms\n"));
+            s.push_str(&format!(
+                "2026-07-19T10:00:{i:02}.000Z INFO request completed in {i}ms\n"
+            ));
         }
         s.push_str("2026-07-19T10:00:10.000Z ERROR disk /dev/sda full\n");
         for i in 11..21 {
-            s.push_str(&format!("2026-07-19T10:00:{i:02}.000Z INFO request completed in {i}ms\n"));
+            s.push_str(&format!(
+                "2026-07-19T10:00:{i:02}.000Z INFO request completed in {i}ms\n"
+            ));
         }
         s
     }
@@ -2871,7 +3041,11 @@ mod tests {
     #[test]
     fn log_sequence_dense_triples() {
         let mut state = gui_state(&repetitive_log());
-        let out = tool_log_sequence(&json!({ "start": 1, "end": 21, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_log_sequence(
+            &json!({ "start": 1, "end": 21, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["total_entries"], 21);
         assert_eq!(out["returned"], 21);
         assert_eq!(out["truncated"], false);
@@ -2884,14 +3058,18 @@ mod tests {
         assert!(first[2].as_u64().is_some());
         let eleventh = seq[10].as_array().unwrap();
         assert_eq!(eleventh[1], 11); // the ERROR line
-        // GUI mode must not leak bookkeeping fields.
+                                     // GUI mode must not leak bookkeeping fields.
         assert!(out.get("log_id").is_none());
     }
 
     #[test]
     fn log_sequence_collapses_long_runs() {
         let mut state = gui_state(&repetitive_log());
-        let out = tool_log_sequence(&json!({ "collapse": true, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_log_sequence(
+            &json!({ "collapse": true, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         let seq = out["sequence"].as_array().unwrap();
         // 10 INFO (collapsed) + 1 ERROR (dense triple) + 10 INFO (collapsed) = 3.
         assert_eq!(seq.len(), 3, "seq: {seq:?}");
@@ -2908,7 +3086,11 @@ mod tests {
     #[test]
     fn log_sequence_truncates_and_flags() {
         let mut state = gui_state(&repetitive_log());
-        let out = tool_log_sequence(&json!({ "max_entries": 5, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_log_sequence(
+            &json!({ "max_entries": 5, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["total_entries"], 21);
         assert_eq!(out["returned"], 5);
         assert_eq!(out["truncated"], true);
@@ -2919,7 +3101,11 @@ mod tests {
     fn raw_log_by_line_and_time() {
         let mut state = gui_state(&repetitive_log());
         // By line.
-        let out = tool_raw_log(&json!({ "start": 10, "end": 12, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_raw_log(
+            &json!({ "start": 10, "end": 12, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         let lines = out["lines"].as_array().unwrap();
         assert_eq!(lines.len(), 3);
         assert!(lines[1].as_str().unwrap().contains("ERROR"));
@@ -2933,7 +3119,11 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert!(lines[0].as_str().unwrap().contains("ERROR"));
         // Inverted range errors.
-        assert!(tool_raw_log(&json!({ "start": 5, "end": 3, "with_filtered_log": false }), &mut state).is_err());
+        assert!(tool_raw_log(
+            &json!({ "start": 5, "end": 3, "with_filtered_log": false }),
+            &mut state
+        )
+        .is_err());
     }
 
     #[test]
@@ -2959,15 +3149,27 @@ mod tests {
         }
         // Fetch a specific id.
         let tid = state.get_active_doc().unwrap().template_at(0);
-        let one = tool_get_template(&json!({ "ids": [tid], "with_filtered_log": false }), &mut state).unwrap();
+        let one = tool_get_template(
+            &json!({ "ids": [tid], "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         let dict = one["templates"].as_object().unwrap();
         assert_eq!(dict.len(), 1);
         assert!(dict.contains_key(&tid.to_string()));
         // Unknown id is simply absent, not an error.
-        let none = tool_get_template(&json!({ "ids": [999999], "with_filtered_log": false }), &mut state).unwrap();
+        let none = tool_get_template(
+            &json!({ "ids": [999999], "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(none["templates"].as_object().unwrap().len(), 0);
         // Non-integer ids error.
-        assert!(tool_get_template(&json!({ "ids": [1.5], "with_filtered_log": false }), &mut state).is_err());
+        assert!(tool_get_template(
+            &json!({ "ids": [1.5], "with_filtered_log": false }),
+            &mut state
+        )
+        .is_err());
     }
 
     #[test]
@@ -2989,13 +3191,21 @@ mod tests {
     fn summarize_range_restricts_results() {
         let mut state = gui_state(&repetitive_log());
         // Lines 1..=10 are all INFO; the ERROR is at line 11.
-        let out = tool_summarize(&json!({ "start": 1, "end": 10, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_summarize(
+            &json!({ "start": 1, "end": 10, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["lines"], 10);
         assert_eq!(out["window"]["start_line"], 1);
         assert_eq!(out["window"]["end_line"], 10);
         assert_eq!(out["error_template_count"], 0);
         // Restrict to just the ERROR line.
-        let out = tool_summarize(&json!({ "start": 11, "end": 11, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_summarize(
+            &json!({ "start": 11, "end": 11, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["lines"], 1);
         assert_eq!(out["error_template_count"], 1);
         assert_eq!(out["error_line_count"], 1);
@@ -3004,7 +3214,11 @@ mod tests {
     #[test]
     fn histogram_range_restricts_buckets() {
         let mut state = gui_state(&repetitive_log());
-        let out = tool_timeline_histogram(&json!({ "start": 1, "end": 10, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_timeline_histogram(
+            &json!({ "start": 1, "end": 10, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["total"], 10);
         // Keyword within a range.
         let out = tool_timeline_histogram(
@@ -3018,7 +3232,11 @@ mod tests {
     #[test]
     fn anomalies_range_restricts_results() {
         let mut state = gui_state(&repetitive_log());
-        let out = tool_template_anomalies(&json!({ "start": 1, "end": 5, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_template_anomalies(
+            &json!({ "start": 1, "end": 5, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["total_lines"], 5);
     }
 
@@ -3039,9 +3257,17 @@ mod tests {
     fn resolve_bound_rejects_zero_and_clamps() {
         let mut state = gui_state(&repetitive_log());
         // 0 is not a valid 1-based line number.
-        assert!(tool_raw_log(&json!({ "start": 0, "end": 5, "with_filtered_log": false }), &mut state).is_err());
+        assert!(tool_raw_log(
+            &json!({ "start": 0, "end": 5, "with_filtered_log": false }),
+            &mut state
+        )
+        .is_err());
         // A line beyond the end clamps instead of erroring.
-        let out = tool_raw_log(&json!({ "start": 1, "end": 999, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_raw_log(
+            &json!({ "start": 1, "end": 999, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["total"], 21);
     }
 
@@ -3049,14 +3275,22 @@ mod tests {
     fn raw_log_missing_bounds_errors() {
         let mut state = gui_state(&repetitive_log());
         assert!(tool_raw_log(&json!({ "with_filtered_log": false }), &mut state).is_err());
-        assert!(tool_raw_log(&json!({ "start": 1, "with_filtered_log": false }), &mut state).is_err());
+        assert!(tool_raw_log(
+            &json!({ "start": 1, "with_filtered_log": false }),
+            &mut state
+        )
+        .is_err());
     }
 
     #[test]
     fn get_template_string_ids() {
         let mut state = gui_state(&repetitive_log());
         let tid = state.get_active_doc().unwrap().template_at(0);
-        let out = tool_get_template(&json!({ "ids": [tid.to_string()], "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_get_template(
+            &json!({ "ids": [tid.to_string()], "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["templates"].as_object().unwrap().len(), 1);
     }
 
@@ -3084,7 +3318,11 @@ mod tests {
     #[test]
     fn histogram_sums_to_line_count_and_filters() {
         let mut state = gui_state(&repetitive_log());
-        let out = tool_timeline_histogram(&json!({ "buckets": 20, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_timeline_histogram(
+            &json!({ "buckets": 20, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["domain"], "time");
         assert_eq!(out["total"], 21);
         assert_eq!(out["counts"].as_array().unwrap().len(), 20);
@@ -3128,7 +3366,8 @@ mod tests {
         content.push_str(&format!("{} FATAL shutdown initiated\n", ts(999)));
 
         let mut state = gui_state(&content);
-        let out = tool_template_anomalies(&json!({ "with_filtered_log": false }), &mut state).unwrap();
+        let out =
+            tool_template_anomalies(&json!({ "with_filtered_log": false }), &mut state).unwrap();
         let anomalies = out["anomalies"].as_array().unwrap();
         let by_pattern = |needle: &str| {
             anomalies
@@ -3144,9 +3383,15 @@ mod tests {
                 .map(|r| r.as_str().unwrap().to_string())
                 .collect::<Vec<String>>()
         };
-        assert!(reasons(by_pattern("TRACE unique")).iter().any(|r| r == "rare"));
-        assert!(reasons(by_pattern("FATAL shutdown")).iter().any(|r| r == "first_seen_late"));
-        assert!(reasons(by_pattern("WARN disk")).iter().any(|r| r == "bursty"));
+        assert!(reasons(by_pattern("TRACE unique"))
+            .iter()
+            .any(|r| r == "rare"));
+        assert!(reasons(by_pattern("FATAL shutdown"))
+            .iter()
+            .any(|r| r == "first_seen_late"));
+        assert!(reasons(by_pattern("WARN disk"))
+            .iter()
+            .any(|r| r == "bursty"));
         // Steady templates must not be flagged.
         assert!(anomalies
             .iter()
@@ -3178,7 +3423,11 @@ mod tests {
         assert_eq!(lines, vec![1, 2, 3]);
 
         // Default strategy: first + last always included, deterministic.
-        let out = tool_template_samples(&json!({ "template_id": tid, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_template_samples(
+            &json!({ "template_id": tid, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         let lines: Vec<u64> = out["samples"]
             .as_array()
             .unwrap()
@@ -3188,11 +3437,22 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(lines.first(), Some(&1));
         assert_eq!(lines.last(), Some(&10));
-        let out2 = tool_template_samples(&json!({ "template_id": tid, "with_filtered_log": false }), &mut state).unwrap();
-        assert_eq!(out["samples"], out2["samples"], "samples must be deterministic");
+        let out2 = tool_template_samples(
+            &json!({ "template_id": tid, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(
+            out["samples"], out2["samples"],
+            "samples must be deterministic"
+        );
 
         // Unknown template id errors.
-        assert!(tool_template_samples(&json!({ "template_id": 9999, "with_filtered_log": false }), &mut state).is_err());
+        assert!(tool_template_samples(
+            &json!({ "template_id": 9999, "with_filtered_log": false }),
+            &mut state
+        )
+        .is_err());
     }
 
     #[test]
@@ -3301,7 +3561,11 @@ mod tests {
         let path = write_temp("2026-07-19T10:00:00.000Z INFO hi\n");
         let log_id = state.add_doc(LogDocument::open(&path).unwrap());
         std::fs::remove_file(path).ok();
-        let out = tool_summarize(&json!({ "log_id": log_id, "with_filtered_log": false }), &mut state).unwrap();
+        let out = tool_summarize(
+            &json!({ "log_id": log_id, "with_filtered_log": false }),
+            &mut state,
+        )
+        .unwrap();
         assert_eq!(out["log_id"], json!(log_id));
         // Schemas advertise the new tools in both modes.
         assert!(headless_tools()
@@ -3370,6 +3634,33 @@ mod tests {
         assert!(required.contains(&"start") && required.contains(&"end"));
     }
 
+    #[test]
+    fn tool_errors_are_structured_and_tools_have_agent_hints() {
+        let error = tool_err("bad argument");
+        assert_eq!(error["isError"], true);
+        let text = error["content"][0]["text"].as_str().unwrap();
+        let payload: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(payload["error"], "tool_error");
+        assert_eq!(payload["message"], "bad argument");
+        assert_eq!(payload["retryable"], false);
+
+        let state = ServerState::default();
+        let list = tools(&state).as_array().unwrap().to_vec();
+        let load = list.iter().find(|t| t["name"] == "load_log").unwrap();
+        assert_eq!(load["annotations"]["readOnlyHint"], false);
+        assert_eq!(load["annotations"]["destructiveHint"], false);
+        let summary = list.iter().find(|t| t["name"] == "summarize_log").unwrap();
+        assert_eq!(summary["annotations"]["readOnlyHint"], true);
+        assert_eq!(summary["annotations"]["idempotentHint"], true);
+    }
+
+    #[test]
+    fn numeric_arguments_reject_invalid_values() {
+        assert!(arg_usize(&json!({ "n": -1 }), "n", 3).is_err());
+        assert!(arg_usize(&json!({ "n": "3" }), "n", 3).is_err());
+        assert_eq!(arg_usize(&json!({}), "n", 3).unwrap(), 3);
+    }
+
     // ---- filter tools + with_filtered_log ----
 
     #[test]
@@ -3378,7 +3669,10 @@ mod tests {
         let empty = tool_filters_get(&json!({}), &mut state).unwrap();
         assert_eq!(empty["filters"].as_array().unwrap().len(), 0);
         assert_eq!(empty["filter_count"], 0);
-        assert!(empty.get("log_id").is_none(), "GUI mode must not leak log_id");
+        assert!(
+            empty.get("log_id").is_none(),
+            "GUI mode must not leak log_id"
+        );
 
         let add1 = tool_filters_add(&json!({ "filter_text": "ERROR" }), &mut state).unwrap();
         let fl = add1["filters"].as_array().unwrap();
@@ -3409,9 +3703,7 @@ mod tests {
     fn filters_cap_and_missing_args_error() {
         let mut state = gui_state(&repetitive_log());
         for i in 0..MAX_FILTERS {
-            state
-                .add_filter("_active", &format!("kw{i:02}"))
-                .unwrap();
+            state.add_filter("_active", &format!("kw{i:02}")).unwrap();
         }
         assert!(state.add_filter("_active", "overflow").is_err());
         assert!(tool_filters_add(&json!({}), &mut state).is_err());
@@ -3421,9 +3713,8 @@ mod tests {
     #[test]
     fn filters_work_headless_with_log_id() {
         let mut state = ServerState::default();
-        let path = write_temp(
-            "2026-07-19T10:00:00.000Z ERROR x\n2026-07-19T10:00:01.000Z INFO y\n",
-        );
+        let path =
+            write_temp("2026-07-19T10:00:00.000Z ERROR x\n2026-07-19T10:00:01.000Z INFO y\n");
         let log_id = state.add_doc(LogDocument::open(&path).unwrap());
         std::fs::remove_file(path).ok();
 
@@ -3459,12 +3750,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out["comment"], "no log");
-        assert!(
-            out["reason"]
-                .as_str()
-                .unwrap()
-                .contains("no filter count = 0")
-        );
+        assert!(out["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no filters are configured"));
+        assert_eq!(out["filter_count"], 0);
+        assert_eq!(out["suggested_next_calls"][0]["tool"], "summarize_log");
 
         state.add_filter("_active", "ERROR").unwrap();
         // INFO/DEBUG lines exist but are excluded from the filtered view —
@@ -3623,17 +3914,20 @@ mod tests {
         ];
         for (name, args) in cases {
             let out = dispatch(name, args, &mut state).unwrap();
-            assert_eq!(out["comment"], "no log", "{name} should short-circuit: {out}");
+            assert_eq!(
+                out["comment"], "no log",
+                "{name} should short-circuit: {out}"
+            );
             assert!(
                 out["reason"]
                     .as_str()
                     .unwrap()
-                    .contains("no filter count = 0"),
+                    .contains("no filters are configured"),
                 "{name}: reason says: {out}"
             );
-            assert!(
-                out["reason"].as_str().unwrap().contains("filters_add"),
-                "{name}: reason missing filters_add hint: {out}"
+            assert_eq!(
+                out["suggested_next_calls"][1]["tool"], "filters_add",
+                "{name}: missing filters_add suggestion: {out}"
             );
         }
         // with_filtered_log=false + no filters still traverses the full file.

@@ -9,7 +9,7 @@ use regex::Regex;
 use super::{window, TimeFormat};
 
 static RE_SLASH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{4}/\d{2}/\d{2}[ T]\d{2}:\d{2}:\d{2}").unwrap()
+    Regex::new(r"^\d{4}/\d{2}/\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?").unwrap()
 });
 
 /// `YYYY/MM/DD HH:MM:SS` timestamps.
@@ -31,8 +31,8 @@ impl TimeFormat for Slash {
 }
 
 fn parse_slash(raw: &str) -> Option<i64> {
-    let s = raw.replace('T', " ");
-    NaiveDateTime::parse_from_str(&s, "%Y/%m/%d %H:%M:%S")
+    let s = raw.replace('T', " ").replace(',', ".");
+    NaiveDateTime::parse_from_str(&s, "%Y/%m/%d %H:%M:%S%.f")
         .ok()
         .map(|n| n.and_utc().timestamp_millis())
 }
@@ -58,5 +58,11 @@ mod tests {
         let (ms, span) = Slash.extract("2026/07/19 10:15:30 INFO hi").unwrap();
         assert_eq!(format_ms(ms), "2026-07-19 10:15:30.000");
         assert_eq!(&"2026/07/19 10:15:30 INFO hi"[span], "2026/07/19 10:15:30");
+    }
+
+    #[test]
+    fn extracts_slash_fraction() {
+        let (ms, _) = Slash.extract("2026/07/19 10:15:30.125 INFO hi").unwrap();
+        assert_eq!(format_ms(ms), "2026-07-19 10:15:30.125");
     }
 }
