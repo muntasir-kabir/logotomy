@@ -1,5 +1,7 @@
 # Change: MCP initialization instructions distinguish GUI and headless workflows
 
+Fixed release benchmark aggregation so the generated `benchmark-results.txt` is excluded from its own input glob, preventing the release job from failing when `cat` reads and writes the same file.
+
 Bumped the application and installer metadata to version 0.1.1 for the release tag.
 
 Made release packaging safer and more reproducible by using the native Intel macOS runner, validating release tags against Cargo and packager versions, pinning cargo-packager, and publishing platform-specific first-run instructions.

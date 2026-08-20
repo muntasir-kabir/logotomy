@@ -166,6 +166,8 @@ jobs:
         run: |
           : > benchmark-results.txt
           for f in benchmark-*.txt; do
+            [ "$f" = "benchmark-results.txt" ] && continue
+            [ -f "$f" ] || continue
             {
               echo "============================================================"
               echo "${f}"
