@@ -16,9 +16,24 @@ pub struct OsLogConsole;
 fn is_level_word(w: &str) -> bool {
     matches!(
         w,
-        "INFO" | "DEBUG" | "ERROR" | "WARNING" | "WARN" | "NOTICE" | "FAULT" | "CRITICAL"
-            | "TRACE" | "DEFAULT" | "Info" | "Debug" | "Error" | "Fault" | "Default"
-            | "Notice" | "Trace" | "Warning"
+        "INFO"
+            | "DEBUG"
+            | "ERROR"
+            | "WARNING"
+            | "WARN"
+            | "NOTICE"
+            | "FAULT"
+            | "CRITICAL"
+            | "TRACE"
+            | "DEFAULT"
+            | "Info"
+            | "Debug"
+            | "Error"
+            | "Fault"
+            | "Default"
+            | "Notice"
+            | "Trace"
+            | "Warning"
     )
 }
 
@@ -93,13 +108,18 @@ mod tests {
             mask_cache: &mut cache,
             header_slots: &[],
         };
-        OsLogConsole.normalize(line, None, &mut ctx).content.into_owned()
+        OsLogConsole
+            .normalize(line, None, &mut ctx)
+            .content
+            .into_owned()
     }
 
     #[test]
     fn matches_positive() {
-        assert!(OsLogConsole.matches("[UI:Navigation] INFO: Transitioning from HomeView to SettingsView"));
-        assert!(OsLogConsole.matches("[Storage:CoreData] DEBUG: Saved 12 records in background context"));
+        assert!(OsLogConsole
+            .matches("[UI:Navigation] INFO: Transitioning from HomeView to SettingsView"));
+        assert!(OsLogConsole
+            .matches("[Storage:CoreData] DEBUG: Saved 12 records in background context"));
         assert!(OsLogConsole.matches("[Sync:CloudKit] ERROR: Permission denied for record zone"));
     }
 

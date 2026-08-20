@@ -39,10 +39,18 @@ pub struct Settings {
     pub skip_filter_delete_confirm: bool,
 }
 
-fn default_dark() -> bool { true }
-fn default_sim_threshold() -> f64 { 0.5 }
-fn default_header_sample_lines() -> usize { 200 }
-fn default_drain_depth() -> usize { 4 }
+fn default_dark() -> bool {
+    true
+}
+fn default_sim_threshold() -> f64 {
+    0.5
+}
+fn default_header_sample_lines() -> usize {
+    200
+}
+fn default_drain_depth() -> usize {
+    4
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -115,7 +123,10 @@ impl Settings {
         match serde_json::to_string_pretty(formats) {
             Ok(text) => {
                 if let Err(e) = std::fs::write(&path, &text) {
-                    log::error!("failed to write custom date formats ({}): {e}", path.display());
+                    log::error!(
+                        "failed to write custom date formats ({}): {e}",
+                        path.display()
+                    );
                 }
             }
             Err(e) => log::error!("failed to serialize custom date formats: {e}"),
@@ -133,12 +144,18 @@ impl Settings {
             Ok(text) => match serde_json::from_str(&text) {
                 Ok(s) => s,
                 Err(e) => {
-                    log::warn!("failed to parse settings file ({}), using defaults: {e}", path.display());
+                    log::warn!(
+                        "failed to parse settings file ({}), using defaults: {e}",
+                        path.display()
+                    );
                     Self::default()
                 }
             },
             Err(e) => {
-                log::warn!("failed to read settings file ({}), using defaults: {e}", path.display());
+                log::warn!(
+                    "failed to read settings file ({}), using defaults: {e}",
+                    path.display()
+                );
                 Self::default()
             }
         }
@@ -187,7 +204,10 @@ mod tests {
     #[test]
     fn skip_filter_delete_confirm_defaults_to_false() {
         let s = Settings::default();
-        assert!(!s.skip_filter_delete_confirm, "default must always ask for confirmation");
+        assert!(
+            !s.skip_filter_delete_confirm,
+            "default must always ask for confirmation"
+        );
     }
 
     #[test]

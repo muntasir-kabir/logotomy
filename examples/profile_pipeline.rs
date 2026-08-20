@@ -42,17 +42,28 @@ fn main() {
     for w in offsets.windows(2) {
         total_len += w[1] - w[0];
     }
-    println!("slice           : {:>8.1?}  ({:.0} MB/s) [{}]", t.elapsed(), mb / t.elapsed().as_secs_f64(), total_len);
+    println!(
+        "slice           : {:>8.1?}  ({:.0} MB/s) [{}]",
+        t.elapsed(),
+        mb / t.elapsed().as_secs_f64(),
+        total_len
+    );
 
     // Phase 2: + utf8 lossy conversion
     let t = Instant::now();
     let mut lines: Vec<Cow<str>> = Vec::with_capacity(n);
     for w in offsets.windows(2) {
         let mut end = w[1];
-        while end > w[0] && (data[end - 1] == b'\n' || data[end - 1] == b'\r') { end -= 1; }
+        while end > w[0] && (data[end - 1] == b'\n' || data[end - 1] == b'\r') {
+            end -= 1;
+        }
         lines.push(String::from_utf8_lossy(&data[w[0]..end]));
     }
-    println!("+utf8 lossy     : {:>8.1?}  ({:.0} MB/s)", t.elapsed(), mb / t.elapsed().as_secs_f64());
+    println!(
+        "+utf8 lossy     : {:>8.1?}  ({:.0} MB/s)",
+        t.elapsed(),
+        mb / t.elapsed().as_secs_f64()
+    );
 
     // Phase 3: + timestamp extraction
     let extractor = TimeDetector::detect(lines.iter().take(1000).map(|l| l.clone()));
@@ -61,7 +72,12 @@ fn main() {
     for line in &lines {
         spans.push(extractor.as_ref().and_then(|e| e.extract(line)));
     }
-    println!("+ts extract     : {:>8.1?}  ({:.0} MB/s) [{} ts]", t.elapsed(), mb / t.elapsed().as_secs_f64(), spans.iter().flatten().count());
+    println!(
+        "+ts extract     : {:>8.1?}  ({:.0} MB/s) [{} ts]",
+        t.elapsed(),
+        mb / t.elapsed().as_secs_f64(),
+        spans.iter().flatten().count()
+    );
 
     // Phase 4: + ts strip (owned copy)
     let t = Instant::now();
@@ -76,7 +92,11 @@ fn main() {
             None => stripped.push(line.clone()),
         }
     }
-    println!("+ts strip       : {:>8.1?}  ({:.0} MB/s)", t.elapsed(), mb / t.elapsed().as_secs_f64());
+    println!(
+        "+ts strip       : {:>8.1?}  ({:.0} MB/s)",
+        t.elapsed(),
+        mb / t.elapsed().as_secs_f64()
+    );
 
     // Phase 5: + masking
     let masker = LogMasker::default();
@@ -86,7 +106,11 @@ fn main() {
     for line in &stripped {
         masked.push(masker.mask_with_header(line, &[], &mut cache));
     }
-    println!("+mask           : {:>8.1?}  ({:.0} MB/s)", t.elapsed(), mb / t.elapsed().as_secs_f64());
+    println!(
+        "+mask           : {:>8.1?}  ({:.0} MB/s)",
+        t.elapsed(),
+        mb / t.elapsed().as_secs_f64()
+    );
 
     // Phase 6: + drain
     let t = Instant::now();
@@ -95,7 +119,12 @@ fn main() {
     for (i, line) in masked.iter().enumerate() {
         ids.push(drain.add_line(line, i));
     }
-    println!("+drain          : {:>8.1?}  ({:.0} MB/s) [{} clusters]", t.elapsed(), mb / t.elapsed().as_secs_f64(), drain.clusters.len());
+    println!(
+        "+drain          : {:>8.1?}  ({:.0} MB/s) [{} clusters]",
+        t.elapsed(),
+        mb / t.elapsed().as_secs_f64(),
+        drain.clusters.len()
+    );
 
     if generated {
         std::fs::remove_file(&path).ok();
@@ -121,10 +150,17 @@ fn generate(path: &std::path::Path, target_bytes: u64) {
     while written < target_bytes {
         let ts = base_ms + (i * 37) as i64;
         let level = levels[(i % 97 / 24) as usize % 4];
-        let event = events[(i % events.len() as u64) as usize].replace("{n}", &(i % 7919).to_string());
+        let event =
+            events[(i % events.len() as u64) as usize].replace("{n}", &(i % 7919).to_string());
         let line = format!(
             "2025-07-13T{:02}:{:02}:{:02}.{:03}Z {} worker-{} {}\n",
-            (ts / 3_600_000) % 24, (ts / 60_000) % 60, (ts / 1_000) % 60, ts % 1000, level, i % 8, event
+            (ts / 3_600_000) % 24,
+            (ts / 60_000) % 60,
+            (ts / 1_000) % 60,
+            ts % 1000,
+            level,
+            i % 8,
+            event
         );
         written += line.len() as u64;
         f.write_all(line.as_bytes()).unwrap();

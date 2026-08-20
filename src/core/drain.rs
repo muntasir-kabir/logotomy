@@ -239,8 +239,14 @@ mod tests {
         assert_eq!(a, b, "same shape should share a template");
         assert_ne!(a, c, "different shape should not");
         let pattern = d.clusters[a as usize].pattern();
-        assert!(pattern.contains("User"), "pattern keeps constant tokens: {pattern}");
-        assert!(pattern.contains("<*>"), "pattern abstracts variables: {pattern}");
+        assert!(
+            pattern.contains("User"),
+            "pattern keeps constant tokens: {pattern}"
+        );
+        assert!(
+            pattern.contains("<*>"),
+            "pattern abstracts variables: {pattern}"
+        );
         assert_eq!(d.clusters[a as usize].size, 2);
     }
 
@@ -275,7 +281,10 @@ mod tests {
         let b = d.add_line("INFO request from charlie to dave", 1);
         assert_eq!(a, b, "same shape should share a template");
         let pattern = d.clusters[a as usize].pattern();
-        assert_eq!(pattern, "INFO request from <*> to <*>", "pattern: {pattern}");
+        assert_eq!(
+            pattern, "INFO request from <*> to <*>",
+            "pattern: {pattern}"
+        );
         assert_eq!(d.clusters[a as usize].size, 2);
     }
 
@@ -285,9 +294,15 @@ mod tests {
         let mut d = Drain::new(3, 0.0, 100, 100);
         let a = d.add_line("a b c", 0);
         let b = d.add_line("a d e", 1);
-        assert_eq!(a, b, "same-first-token lines should share a template at depth=3");
+        assert_eq!(
+            a, b,
+            "same-first-token lines should share a template at depth=3"
+        );
         let pattern = d.clusters[a as usize].pattern();
-        assert_eq!(pattern, "a <*> <*>", "differing positions should be wildcarded: {pattern}");
+        assert_eq!(
+            pattern, "a <*> <*>",
+            "differing positions should be wildcarded: {pattern}"
+        );
     }
 
     #[test]
@@ -318,7 +333,10 @@ mod tests {
         let id2 = d.add_line("INFO beta", 1);
         // Third line → budget exhausted, force-merge into closest (id1 or id2)
         let id3 = d.add_line("INFO gamma", 2);
-        assert!(id3 == id1 || id3 == id2, "force-merged line should match an existing cluster");
+        assert!(
+            id3 == id1 || id3 == id2,
+            "force-merged line should match an existing cluster"
+        );
         let cluster = d.clusters.iter().find(|c| c.id == id3).unwrap();
         assert!(cluster.size >= 2, "force-merged cluster should have grown");
     }
@@ -328,7 +346,10 @@ mod tests {
         let mut d = Drain::new(4, 1.0, 100, 100);
         let a = d.add_line("INFO foo", 0);
         let b = d.add_line("INFO bar", 1);
-        assert_ne!(a, b, "different tokens below threshold 1.0 should get different clusters");
+        assert_ne!(
+            a, b,
+            "different tokens below threshold 1.0 should get different clusters"
+        );
         assert_eq!(d.clusters[a as usize].size, 1);
         assert_eq!(d.clusters[b as usize].size, 1);
     }
@@ -346,7 +367,10 @@ mod tests {
         assert!(c > 0, "overflow line should still get a template ID");
         // "delta" also overflows to "*" branch — same leaf, same shape → same cluster.
         let d2 = d.add_line("delta seven eight", 3);
-        assert_eq!(c, d2, "overflow lines with same shape should cluster together");
+        assert_eq!(
+            c, d2,
+            "overflow lines with same shape should cluster together"
+        );
         // "alpha" and "beta" are in their own clusters (different from overflow).
         assert_ne!(a, c, "different branches should have different clusters");
         assert_ne!(b, c, "different branches should have different clusters");
@@ -360,7 +384,10 @@ mod tests {
         // Should contain spaces between tokens, no leading/trailing spaces
         assert!(!pattern.starts_with(' '));
         assert!(!pattern.ends_with(' '));
-        assert!(pattern.contains(' '), "pattern should have spaces: '{pattern}'");
+        assert!(
+            pattern.contains(' '),
+            "pattern should have spaces: '{pattern}'"
+        );
     }
 
     #[test]

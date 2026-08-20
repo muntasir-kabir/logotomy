@@ -7,9 +7,8 @@ use regex::Regex;
 
 use super::{window, TimeFormat};
 
-static RE_EPOCH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(\d{13}|\d{10})[\s,|\]]").unwrap()
-});
+static RE_EPOCH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(\d{13}|\d{10})[\s,|\]]").unwrap());
 
 /// Epoch seconds/millis timestamps (`1784158530123 | ...`).
 pub struct Epoch;

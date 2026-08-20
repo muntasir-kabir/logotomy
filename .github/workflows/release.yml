@@ -73,7 +73,9 @@ jobs:
         with:
           path: ~/.cargo/bin/cargo-packager*
           # Bump this key when you want CI to rebuild the tool (version pin).
-          key: cargo-packager-${{ runner.os }}-0.11.8
+          # Include the host architecture: macOS release jobs run on both
+          # Apple Silicon and Intel, and cargo-packager is a host executable.
+          key: cargo-packager-${{ runner.os }}-${{ runner.arch }}-0.11.8
       - name: Install cargo-packager
         if: steps.cache-packager.outputs.cache-hit != 'true'
         run: cargo install cargo-packager --locked --version 0.11.8

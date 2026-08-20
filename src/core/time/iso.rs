@@ -76,7 +76,11 @@ fn parse_iso_fast(raw: &str) -> Option<i64> {
     }
     let digit = |i: usize| -> Option<i64> {
         let c = b[i];
-        if c.is_ascii_digit() { Some((c - b'0') as i64) } else { None }
+        if c.is_ascii_digit() {
+            Some((c - b'0') as i64)
+        } else {
+            None
+        }
     };
     let num = |i: usize, n: usize| -> Option<i64> {
         let mut v = 0i64;
@@ -85,8 +89,12 @@ fn parse_iso_fast(raw: &str) -> Option<i64> {
         }
         Some(v)
     };
-    if b[4] != b'-' || b[7] != b'-' || (b[10] != b'T' && b[10] != b' ')
-        || b[13] != b':' || b[16] != b':' {
+    if b[4] != b'-'
+        || b[7] != b'-'
+        || (b[10] != b'T' && b[10] != b' ')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
         return None;
     }
     let year = num(0, 4)?;
@@ -136,7 +144,8 @@ fn parse_iso_fast(raw: &str) -> Option<i64> {
         offset_ms = sign * (zh * 3_600_000 + zm * 60_000);
     }
     let days = days_from_civil(year, month, day);
-    let epoch_ms = days * 86_400_000 + hour * 3_600_000 + min * 60_000 + sec * 1_000 + ms - offset_ms;
+    let epoch_ms =
+        days * 86_400_000 + hour * 3_600_000 + min * 60_000 + sec * 1_000 + ms - offset_ms;
     Some(epoch_ms)
 }
 
@@ -150,7 +159,6 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -178,14 +186,22 @@ mod tests {
     fn extracts_iso_with_z() {
         let (ms, span) = Iso.extract("2026-07-19T10:15:30.123Z INFO hello").unwrap();
         assert_eq!(format_ms(ms), "2026-07-19 10:15:30.123");
-        assert_eq!(&"2026-07-19T10:15:30.123Z INFO hello"[span], "2026-07-19T10:15:30.123Z");
+        assert_eq!(
+            &"2026-07-19T10:15:30.123Z INFO hello"[span],
+            "2026-07-19T10:15:30.123Z"
+        );
     }
 
     #[test]
     fn extracts_iso_space_comma_millis() {
-        let (ms, span) = Iso.extract("2026-07-19 10:15:30,456 WARN something").unwrap();
+        let (ms, span) = Iso
+            .extract("2026-07-19 10:15:30,456 WARN something")
+            .unwrap();
         assert_eq!(format_ms(ms), "2026-07-19 10:15:30.456");
-        assert_eq!(&"2026-07-19 10:15:30,456 WARN something"[span], "2026-07-19 10:15:30,456");
+        assert_eq!(
+            &"2026-07-19 10:15:30,456 WARN something"[span],
+            "2026-07-19 10:15:30,456"
+        );
     }
 
     #[test]
@@ -193,6 +209,9 @@ mod tests {
         let (ms, span) = Iso.extract("2026-07-19T10:15:30+06:00 INFO tz").unwrap();
         // 10:15:30 at +06:00 == 04:15:30 UTC
         assert_eq!(format_ms(ms), "2026-07-19 04:15:30.000");
-        assert_eq!(&"2026-07-19T10:15:30+06:00 INFO tz"[span], "2026-07-19T10:15:30+06:00");
+        assert_eq!(
+            &"2026-07-19T10:15:30+06:00 INFO tz"[span],
+            "2026-07-19T10:15:30+06:00"
+        );
     }
 }

@@ -17,8 +17,14 @@ fn main() {
     #[cfg(windows)]
     {
         let mut res = winres::WindowsResource::new();
-        res.set_icon(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/logotomy.ico"));
-        res.set("FileDescription", "logotomy — high-performance log analyzer");
+        res.set_icon(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/icons/logotomy.ico"
+        ));
+        res.set(
+            "FileDescription",
+            "logotomy — high-performance log analyzer",
+        );
         res.set("ProductName", "logotomy");
         res.set("ProductVersion", "0.1.0");
         res.set("FileVersion", "0.1.0");

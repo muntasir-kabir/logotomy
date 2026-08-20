@@ -35,7 +35,9 @@ struct Gen {
 
 impl Gen {
     fn new(seed: u64) -> Self {
-        Self { rng: Pcg64::seed_from_u64(seed) }
+        Self {
+            rng: Pcg64::seed_from_u64(seed),
+        }
     }
 
     /// Inclusive integer range [lo, hi].
@@ -99,13 +101,26 @@ const LEVEL_WEIGHTS: [u32; 6] = [5, 1, 10, 14, 45, 25];
 // Source files
 // ---------------------------------------------------------------------------
 const FILES: [&str; 20] = [
-    "AppDelegate.swift", "ViewController.swift", "NetworkManager.swift",
-    "CoreDataStack.swift", "NotificationService.swift", "SceneDelegate.swift",
-    "UserDefaultsManager.swift", "PushHandler.swift", "LocationManager.swift",
-    "AuthService.swift", "SyncEngine.swift", "AnalyticsTracker.swift",
-    "WatchConnectivityManager.swift", "StoreKitManager.swift",
-    "HealthKitManager.swift", "CameraService.swift", "DeepLinkRouter.swift",
-    "ConflictResolver.swift", "MediaCacheManager.swift", "SecureStore.swift",
+    "AppDelegate.swift",
+    "ViewController.swift",
+    "NetworkManager.swift",
+    "CoreDataStack.swift",
+    "NotificationService.swift",
+    "SceneDelegate.swift",
+    "UserDefaultsManager.swift",
+    "PushHandler.swift",
+    "LocationManager.swift",
+    "AuthService.swift",
+    "SyncEngine.swift",
+    "AnalyticsTracker.swift",
+    "WatchConnectivityManager.swift",
+    "StoreKitManager.swift",
+    "HealthKitManager.swift",
+    "CameraService.swift",
+    "DeepLinkRouter.swift",
+    "ConflictResolver.swift",
+    "MediaCacheManager.swift",
+    "SecureStore.swift",
 ];
 
 // ---------------------------------------------------------------------------
@@ -380,7 +395,9 @@ fn gen_value(rng: &mut Gen, token: &str) -> String {
         "request_id" => rng.int(100_000, 999_999).to_string(),
         "session_id" => format!("sess-{}", rng.int(100_000, 999_999)),
         "status" => {
-            const S: [i64; 14] = [200, 201, 204, 301, 304, 400, 401, 403, 404, 429, 500, 502, 503, 504];
+            const S: [i64; 14] = [
+                200, 201, 204, 301, 304, 400, 401, 403, 404, 429, 500, 502, 503, 504,
+            ];
             rng.choice(&S).to_string()
         }
         "bytes" => rng.int(1, 65_535).to_string(),
@@ -397,18 +414,39 @@ fn gen_value(rng: &mut Gen, token: &str) -> String {
             rng.int(0, 255),
             rng.int(1, 254)
         ),
-        "device" => rng.choice(&[
-            "iPhone16,2", "iPhone15,3", "iPhone14,2", "iPad14,5",
-            "iPad13,4", "AppleTV14,1", "Watch7,4",
-        ]).to_string(),
-        "key_name" => rng.choice(&[
-            "auth.token", "auth.refresh", "launch.count", "theme",
-            "locale", "push.token", "onboarding.done",
-        ]).to_string(),
-        "route" => rng.choice(&[
-            "profile", "settings", "feed", "messages", "search",
-            "notifications", "billing",
-        ]).to_string(),
+        "device" => rng
+            .choice(&[
+                "iPhone16,2",
+                "iPhone15,3",
+                "iPhone14,2",
+                "iPad14,5",
+                "iPad13,4",
+                "AppleTV14,1",
+                "Watch7,4",
+            ])
+            .to_string(),
+        "key_name" => rng
+            .choice(&[
+                "auth.token",
+                "auth.refresh",
+                "launch.count",
+                "theme",
+                "locale",
+                "push.token",
+                "onboarding.done",
+            ])
+            .to_string(),
+        "route" => rng
+            .choice(&[
+                "profile",
+                "settings",
+                "feed",
+                "messages",
+                "search",
+                "notifications",
+                "billing",
+            ])
+            .to_string(),
         "entity_uuid" => format!(
             "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
             rng.u32(),
@@ -417,23 +455,39 @@ fn gen_value(rng: &mut Gen, token: &str) -> String {
             rng.u16() | 0x4000,
             (rng.u64() & 0xFFFF_FFFF_FFFF) | 0x8000_0000_0000
         ),
-        "error_code" => rng.choice(&[
-            "NSURLErrorTimedOut", "NSURLErrorCannotConnectToHost",
-            "NSURLErrorNetworkConnectionLost", "kCLErrorLocationUnknown",
-            "AVErrorDiskFull", "CBErrorConnectionTimeout",
-            "CKErrorNetworkFailure", "SKErrorStoreProductNotAvailable",
-        ]).to_string(),
+        "error_code" => rng
+            .choice(&[
+                "NSURLErrorTimedOut",
+                "NSURLErrorCannotConnectToHost",
+                "NSURLErrorNetworkConnectionLost",
+                "kCLErrorLocationUnknown",
+                "AVErrorDiskFull",
+                "CBErrorConnectionTimeout",
+                "CKErrorNetworkFailure",
+                "SKErrorStoreProductNotAvailable",
+            ])
+            .to_string(),
         "lat" => format!("{:.4}", rng.float(-90.0, 90.0)),
         "lon" => format!("{:.4}", rng.float(-180.0, 180.0)),
         "accuracy" => format!("{:.1}", rng.float(3.0, 65.0)),
         "line" => rng.int(1, 300).to_string(),
         "addr" => format!("{:016x}", rng.un(0x100000, 0xFFFF_FFFF_FF)),
         "addr_short" => format!("{:x}", rng.un(1, 0xFFFFF)),
-        "name" => rng.choice(&["alice", "bob", "carol", "dave", "erin", "frank"]).to_string(),
-        "event" => rng.choice(&[
-            "login", "logout", "sync_start", "sync_end", "push_register",
-            "deep_link", "purchase", "upload",
-        ]).to_string(),
+        "name" => rng
+            .choice(&["alice", "bob", "carol", "dave", "erin", "frank"])
+            .to_string(),
+        "event" => rng
+            .choice(&[
+                "login",
+                "logout",
+                "sync_start",
+                "sync_end",
+                "push_register",
+                "deep_link",
+                "purchase",
+                "upload",
+            ])
+            .to_string(),
         "expiry" => format!(
             "2026-07-{:02}T{:02}:{:02}:00Z",
             rng.int(1, 30),
@@ -612,11 +666,10 @@ fn main() {
         // Each size starts from a fresh PCG64 seeded identically, so
         // generation is fully deterministic per size AND smaller files are
         // exact byte-prefixes of larger ones — convenient for benchmarking.
-        let written = generate(Path::new(&path), count, &mut Gen::new(seed))
-            .unwrap_or_else(|e| {
-                eprintln!("error: failed to write {path}: {e}");
-                std::process::exit(1);
-            });
+        let written = generate(Path::new(&path), count, &mut Gen::new(seed)).unwrap_or_else(|e| {
+            eprintln!("error: failed to write {path}: {e}");
+            std::process::exit(1);
+        });
         println!("Generated {written} lines → {path}");
     }
 }
@@ -630,11 +683,7 @@ mod tests {
     use std::fs;
 
     fn tmp(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "logotomy_gen_{}_{}",
-            std::process::id(),
-            name
-        ))
+        std::env::temp_dir().join(format!("logotomy_gen_{}_{}", std::process::id(), name))
     }
 
     fn cleanup(p: &std::path::Path) {
@@ -684,11 +733,17 @@ mod tests {
         let a = make_message(&mut rng, "layoutSubviews bounds={{0,0},{375,812}}");
         assert!(a.ends_with("bounds={{0,0},{375,812}}"));
 
-        let b = make_message(&mut rng, "Watch connectivity message sent payload={command=sync}");
+        let b = make_message(
+            &mut rng,
+            "Watch connectivity message sent payload={command=sync}",
+        );
         assert!(b.contains("payload={command=sync}"));
 
         // Real substitution works and keeps the surrounding literal text.
-        let c = make_message(&mut rng, "Deep link handled url=myapp://{route}/{entity_id}");
+        let c = make_message(
+            &mut rng,
+            "Deep link handled url=myapp://{route}/{entity_id}",
+        );
         assert!(c.starts_with("Deep link handled url=myapp://"));
         assert!(!c.contains("{entity_id}"));
     }
@@ -712,7 +767,9 @@ mod tests {
         let p = tmp("faults.log");
         generate(&p, 10_000, &mut Gen::new(42)).unwrap();
         let content = fs::read_to_string(&p).unwrap();
-        assert!(content.lines().any(|l| l.starts_with(char::is_numeric) && l.contains("0x") && !l.contains("MyApp[")));
+        assert!(content
+            .lines()
+            .any(|l| l.starts_with(char::is_numeric) && l.contains("0x") && !l.contains("MyApp[")));
         cleanup(&p);
     }
 

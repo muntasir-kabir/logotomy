@@ -15,7 +15,9 @@ static RE_RFC2822: LazyLock<Regex> = LazyLock::new(|| {
 pub struct Rfc2822;
 
 impl TimeFormat for Rfc2822 {
-    fn name(&self) -> &'static str { "RFC 2822" }
+    fn name(&self) -> &'static str {
+        "RFC 2822"
+    }
 
     fn matches(&self, line: &str) -> bool {
         RE_RFC2822.find(window(line)).is_some()
@@ -24,7 +26,9 @@ impl TimeFormat for Rfc2822 {
     fn extract(&self, line: &str) -> Option<(i64, Range<usize>)> {
         let m = RE_RFC2822.find(window(line))?;
         let raw = m.as_str().replace("GMT", "+0000").replace("UTC", "+0000");
-        let normalized = if raw.contains(",") { raw } else {
+        let normalized = if raw.contains(",") {
+            raw
+        } else {
             raw.replacen(' ', ", ", 1)
         };
         let dt = DateTime::parse_from_str(&normalized, "%a, %d %b %Y %H:%M:%S %z").ok()?;

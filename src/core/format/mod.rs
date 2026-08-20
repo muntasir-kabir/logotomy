@@ -78,7 +78,8 @@ pub trait LogFormat: Send + Sync {
 
 /// Structured formats, in detection priority order (most specific first).
 /// `Plain` is deliberately absent — it matches everything and is the fallback.
-pub static FORMATS: &[&'static dyn LogFormat] = &[&Json, &Cef, &Rfc5424, &OsLog, &LogcatBrief, &OsLogConsole];
+pub static FORMATS: &[&'static dyn LogFormat] =
+    &[&Json, &Cef, &Rfc5424, &OsLog, &LogcatBrief, &OsLogConsole];
 
 /// Samples lines and picks the dominant log format (falls back to `Plain`).
 pub struct FormatDetector;
@@ -178,7 +179,10 @@ mod tests {
     fn stray_structured_lines_do_not_flip_format() {
         let mut lines: Vec<String> = Vec::new();
         for i in 0..100 {
-            lines.push(format!("2026-08-15 19:40:{:02} [INFO] plain log line {i}", i % 60));
+            lines.push(format!(
+                "2026-08-15 19:40:{:02} [INFO] plain log line {i}",
+                i % 60
+            ));
         }
         lines.push("CEF:0|Vendor|Product|1.0|100|Name|3|".to_string());
         lines.push("{\"lvl\": 30}".to_string());

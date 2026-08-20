@@ -6,7 +6,7 @@
 //! scroll-position indicator bar on the right edge.
 
 use std::cell::Cell;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aho_corasick::AhoCorasick;
 use eframe::egui;
@@ -91,7 +91,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     // ---- scroll area setup (vertical + horizontal) ----
     // Compute the horizontal scroll extent from the longest line.
     let char_width = ui.ctx().fonts_mut(|f| f.glyph_width(&font_id, ' '));
-    let max_line_px = tab.doc.max_line_width as f32 * char_width + 80.0; // 80px for line number gutter
+    let max_line_px = tab.doc.max_line_width as f32 * char_width + 80.0; // line-number gutter
     let mut scroll_area = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .id_salt("log_scroll")
@@ -282,6 +282,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                     let lo = start.min(end);
                     let hi = start.max(end);
                     tab.pending_selection = Some((lo, hi));
+                    tab.selection_popup_pos = release_pos;
                 } else {
                     tab.selection_range = None;
                     tab.pending_selection = None;
@@ -317,8 +318,11 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
         };
 
         let popup_id = egui::Id::new("selection_popup");
+        if tab.selection_popup_opened_at.is_none() {
+            tab.selection_popup_opened_at = Some(Instant::now());
+        }
         let popup_anchor_pos = tab
-            .drag_start_pos
+            .selection_popup_pos
             .unwrap_or_else(|| ui.input(|i| i.pointer.latest_pos().unwrap_or_default()));
         let popup_pos = popup_anchor_pos + egui::vec2(8.0, 8.0);
 
@@ -342,6 +346,8 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                         tab.pin_comment.clear();
                         tab.pending_selection = None;
                         tab.drag_start_pos = None;
+                        tab.selection_popup_pos = None;
+                        tab.selection_popup_opened_at = None;
                     }
                 });
 
@@ -349,9 +355,26 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                     tab.selection_range = None;
                     tab.pending_selection = None;
                     tab.drag_start_pos = None;
+                    tab.selection_popup_pos = None;
+                    tab.selection_popup_opened_at = None;
                 }
             });
         });
+
+        if area_resp.response.hovered() {
+            tab.selection_popup_opened_at = Some(Instant::now());
+        } else if tab
+            .selection_popup_opened_at
+            .is_some_and(|opened| opened.elapsed() >= Duration::from_secs(2))
+        {
+            tab.selection_range = None;
+            tab.pending_selection = None;
+            tab.drag_start_pos = None;
+            tab.selection_popup_pos = None;
+            tab.selection_popup_opened_at = None;
+        } else {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
 
         // Close on click outside
         if ui.input(|i| i.pointer.any_click()) {
@@ -360,6 +383,8 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                     tab.selection_range = None;
                     tab.pending_selection = None;
                     tab.drag_start_pos = None;
+                    tab.selection_popup_pos = None;
+                    tab.selection_popup_opened_at = None;
                 }
             }
         }
@@ -622,8 +647,6 @@ fn show_toolbar(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme, _max_visible
             }
         }
 
-        show_line_count(ui, tab, theme);
-
         // Search controls sit left-aligned, right after the status text, separated
         // by a separator (not flushed to the right of the toolbar).
         ui.separator();
@@ -765,11 +788,7 @@ fn show_search_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             && !tab.filters.iter().any(|f| f.text == tab.find_query);
         if can_add_filter {
             if ui
-                .add(
-                    egui::Button::new(RichText::new("Add Filter").strong().size(12.0))
-                        .fill(theme.accent)
-                        .corner_radius(4.0),
-                )
+                .add(egui::Button::new("Add Filter ↵"))
                 .on_hover_text(format!("Add '{}' as a timeline filter", tab.find_query))
                 .clicked()
             {
@@ -828,24 +847,6 @@ fn is_word_delimiter(c: char) -> bool {
             c,
             '-' | '[' | ']' | '{' | '}' | '(' | ')' | ',' | '"' | '\''
         )
-}
-
-/// Display total and filtered line counts.
-fn show_line_count(ui: &mut egui::Ui, tab: &LogTab, theme: &Theme) {
-    let total_lines = tab.doc.total_lines();
-    if let Some(visible) = &tab.visible_lines {
-        ui.label(
-            RichText::new(format!("{} / {} lines", visible.len(), total_lines))
-                .small()
-                .color(theme.text_muted),
-        );
-    } else {
-        ui.label(
-            RichText::new(format!("{} lines", total_lines))
-                .small()
-                .color(theme.text_muted),
-        );
-    }
 }
 
 /// Compute the deterministic scroll offset for a pending scroll-to-line,
@@ -1162,7 +1163,7 @@ impl<'a> Highlights<'a> {
 // ---------------------------------------------------------------------------
 
 /// Build the styled LayoutJob for one log line: filter-highlighted text spans.
-/// The line number and color marker are rendered separately in `render_row`.
+/// Shared log-line layout used by the central view and pin preview.
 /// Shared by the log view and context panel.
 ///
 /// TODO: Make matched filters bold (requires per-span FontId changes in egui).

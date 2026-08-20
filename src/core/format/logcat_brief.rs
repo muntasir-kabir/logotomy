@@ -74,7 +74,10 @@ mod tests {
             mask_cache: &mut cache,
             header_slots: &[],
         };
-        LogcatBrief.normalize(line, None, &mut ctx).content.into_owned()
+        LogcatBrief
+            .normalize(line, None, &mut ctx)
+            .content
+            .into_owned()
     }
 
     #[test]

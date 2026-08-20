@@ -107,6 +107,8 @@ pub struct LogTab {
     pub drag_start_line: Option<usize>,
     pub drag_current_line: Option<usize>,
     pub drag_start_pos: Option<egui::Pos2>,
+    pub selection_popup_pos: Option<egui::Pos2>,
+    pub selection_popup_opened_at: Option<std::time::Instant>,
     /// First and last *real* line index visible in the log viewport.
     pub viewport_range: Option<(usize, usize)>,
     /// Real line index to place at the top of the log viewport after a
@@ -195,6 +197,8 @@ impl LogTab {
             drag_start_line: None,
             drag_current_line: None,
             drag_start_pos: None,
+            selection_popup_pos: None,
+            selection_popup_opened_at: None,
             viewport_range: None,
             preserve_anchor: None,
             applied_filter: None,

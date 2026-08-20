@@ -41,10 +41,10 @@ const EYE_LEFT_PAD: f32 = 2.0;
 const LABEL_LANE_PAD: f32 = 3.0;
 /// Width of the right column for pan/zoom hint icons.
 const ICON_WIDTH: f32 = 18.0;
-/// Height of the header row ("Timeline" label + pop-out button) plus the
+/// Height of the header row ("Timeline" label + filter controls) plus the
 /// 2px gap below it. Included in `panel_height` so the fixed top panel is
 /// tall enough for header + body + minimap.
-const HEADER_HEIGHT: f32 = 24.0;
+const HEADER_HEIGHT: f32 = 30.0;
 
 /// Compute the total height of the timeline panel for the given tab.
 /// Used by the fixed top panel so the whole timeline (header, histogram,
@@ -70,7 +70,7 @@ pub fn panel_height(tab: &LogTab) -> f32 {
 }
 
 pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         ui.label(RichText::new("Timeline").strong());
         ui.add_space(8.0);
 
@@ -104,7 +104,13 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                 tab.pending_clear_filters = true;
             }
 
-            ui.separator();
+            // Keep the separator to header height. A bare separator in this
+            // top-aligned horizontal layout expands to the full panel height,
+            // which would push the timeline body below the visible panel.
+            ui.add_sized(
+                egui::vec2(1.0, HEADER_HEIGHT - 2.0),
+                egui::Separator::default(),
+            );
         }
 
         filter_strip::add_filter_ui(ui, tab, theme);

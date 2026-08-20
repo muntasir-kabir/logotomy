@@ -30,7 +30,9 @@ pub struct YearFirstDot;
 macro_rules! numeric_format {
     ($type:ident, $name:literal, $regex:ident, $pattern:literal) => {
         impl TimeFormat for $type {
-            fn name(&self) -> &'static str { $name }
+            fn name(&self) -> &'static str {
+                $name
+            }
 
             fn matches(&self, line: &str) -> bool {
                 $regex.find(window(line)).is_some()
@@ -49,9 +51,24 @@ macro_rules! numeric_format {
 
 numeric_format!(UsSlash, "MM/DD/YYYY", RE_US_SLASH, "%m/%d/%Y %H:%M:%S%.f");
 numeric_format!(UsDash, "MM-DD-YYYY", RE_DAY_DASH, "%m-%d-%Y %H:%M:%S%.f");
-numeric_format!(DayFirstDash, "DD-MM-YYYY", RE_DAY_DASH, "%d-%m-%Y %H:%M:%S%.f");
-numeric_format!(DayFirstDot, "DD.MM.YYYY", RE_DAY_DOT, "%d.%m.%Y %H:%M:%S%.f");
-numeric_format!(YearFirstDot, "YYYY.MM.DD", RE_YEAR_DOT, "%Y.%m.%d %H:%M:%S%.f");
+numeric_format!(
+    DayFirstDash,
+    "DD-MM-YYYY",
+    RE_DAY_DASH,
+    "%d-%m-%Y %H:%M:%S%.f"
+);
+numeric_format!(
+    DayFirstDot,
+    "DD.MM.YYYY",
+    RE_DAY_DOT,
+    "%d.%m.%Y %H:%M:%S%.f"
+);
+numeric_format!(
+    YearFirstDot,
+    "YYYY.MM.DD",
+    RE_YEAR_DOT,
+    "%Y.%m.%d %H:%M:%S%.f"
+);
 
 #[cfg(test)]
 mod tests {
@@ -61,11 +78,31 @@ mod tests {
     #[test]
     fn extracts_common_numeric_layouts() {
         let cases: &[(&dyn TimeFormat, &str, &str)] = &[
-            (&UsSlash, "08/20/2026 10:15:30.125 INFO", "2026-08-20 10:15:30.125"),
-            (&UsDash, "08-20-2026 10:15:30 INFO", "2026-08-20 10:15:30.000"),
-            (&DayFirstDash, "20-08-2026 10:15:30,250 WARN", "2026-08-20 10:15:30.250"),
-            (&DayFirstDot, "20.08.2026 10:15:30 DEBUG", "2026-08-20 10:15:30.000"),
-            (&YearFirstDot, "2026.08.20 10:15:30.5 INFO", "2026-08-20 10:15:30.500"),
+            (
+                &UsSlash,
+                "08/20/2026 10:15:30.125 INFO",
+                "2026-08-20 10:15:30.125",
+            ),
+            (
+                &UsDash,
+                "08-20-2026 10:15:30 INFO",
+                "2026-08-20 10:15:30.000",
+            ),
+            (
+                &DayFirstDash,
+                "20-08-2026 10:15:30,250 WARN",
+                "2026-08-20 10:15:30.250",
+            ),
+            (
+                &DayFirstDot,
+                "20.08.2026 10:15:30 DEBUG",
+                "2026-08-20 10:15:30.000",
+            ),
+            (
+                &YearFirstDot,
+                "2026.08.20 10:15:30.5 INFO",
+                "2026-08-20 10:15:30.500",
+            ),
         ];
         for (format, line, expected) in cases {
             let (ms, _) = format.extract(line).unwrap();

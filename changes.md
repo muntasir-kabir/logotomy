@@ -1,3 +1,19 @@
+# Maintenance: restore Rust formatting consistency
+
+Ran the repository-wide Rust formatter to remove formatting drift and keep source files consistent with `cargo fmt --check`.
+
+# Fix: keep timeline lanes visible with top-aligned filter controls
+
+Constrained the timeline header separator and matched the fixed header height to the default controls so the header no longer consumes the entire panel and hides the timeline lanes.
+
+# Fix: restore default theme and alignment for filter controls
+
+Removed the special filter-control colors from the timeline and log-view Add Filter controls, and top-aligned the timeline header filter input and button with the other header controls.
+
+# Fix: keep cached cargo-packager binaries architecture-specific
+
+The release workflow now includes `runner.arch` in the `cargo-packager` cache key. This prevents the Apple Silicon packager executable from being restored on the Intel macOS runner, where it fails with `Bad CPU type in executable`.
+
 # Change: MCP initialization instructions distinguish GUI and headless workflows
 
 Fixed release benchmark aggregation so the generated `benchmark-results.txt` is excluded from its own input glob, preventing the release job from failing when `cat` reads and writes the same file.
@@ -316,3 +332,6 @@ Fixed index-out-of-bounds panic when removing keywords by bounding lane iteratio
 # AI Coding Agent integration popup
 
 Added a "🤖 Integrate" button that opens a scrollable popup with per-agent config instructions and copy buttons for Claude Desktop, Claude Code, Cline, Cursor, GitHub Copilot Chat, and OpenAI Codex.
+# Fix: compact yellow filter controls and selection popup behavior
+
+Made timeline/log filter controls compact with a light yellow treatment and trailing Enter affordance, removed the log header line-count text and row-number gutter, and improved selection pin popup placement and auto-dismiss behavior.

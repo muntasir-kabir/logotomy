@@ -85,7 +85,10 @@ mod tests {
     #[test]
     fn builds_header_and_masks_extension() {
         let out = normalize("CEF:0|VendorX|AppY|1.0|100|Login Success|3|suser=mkabir spt=443");
-        assert!(out.starts_with("CEF VendorX AppY 100 Login Success 3"), "got: {out}");
+        assert!(
+            out.starts_with("CEF VendorX AppY 100 Login Success 3"),
+            "got: {out}"
+        );
         // spt=443 masked to spt=<NUM>; username (no digits) stays literal.
         assert!(out.contains("spt=<NUM>"), "got: {out}");
         assert!(out.contains("suser=mkabir"), "got: {out}");
@@ -94,6 +97,9 @@ mod tests {
     #[test]
     fn handles_missing_extension() {
         let out = normalize("CEF:0|VendorX|AppY|1.0|100|Login Success|3");
-        assert!(out.starts_with("CEF VendorX AppY 100 Login Success 3"), "got: {out}");
+        assert!(
+            out.starts_with("CEF VendorX AppY 100 Login Success 3"),
+            "got: {out}"
+        );
     }
 }

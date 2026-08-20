@@ -118,9 +118,12 @@ fn build_content<'a>(line: &'a str, ctx: &mut FormatContext<'_>) -> Cow<'a, str>
         body.push(' ');
     }
     let content = format!("OSLOG {level} {}", body.trim_end());
-    Cow::Owned(ctx.masker.mask_with_header(&content, &[], ctx.mask_cache).into_owned())
+    Cow::Owned(
+        ctx.masker
+            .mask_with_header(&content, &[], ctx.mask_cache)
+            .into_owned(),
+    )
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -146,9 +149,8 @@ mod tests {
         assert!(OsLog.matches(
             "2026-08-15 19:40:30.123456+0300 Df Default 0x0 12345 2 [Nav] com.app: Transitioning"
         ));
-        assert!(OsLog.matches(
-            "2026-08-15 19:40:30.123456+0300 0x1a2b3c Error 0x99 99 1 com.app: Failed"
-        ));
+        assert!(OsLog
+            .matches("2026-08-15 19:40:30.123456+0300 0x1a2b3c Error 0x99 99 1 com.app: Failed"));
     }
 
     #[test]

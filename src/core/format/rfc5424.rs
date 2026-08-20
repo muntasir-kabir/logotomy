@@ -117,7 +117,8 @@ mod tests {
 
     #[test]
     fn matches_positive() {
-        assert!(Rfc5424.matches("<134>1 2026-08-15T19:40:20.123Z srv-alpha auth-api 1201 tx_882 - Login"));
+        assert!(Rfc5424
+            .matches("<134>1 2026-08-15T19:40:20.123Z srv-alpha auth-api 1201 tx_882 - Login"));
     }
 
     #[test]
@@ -132,8 +133,13 @@ mod tests {
 
     #[test]
     fn normalizes_header_and_masks_msg() {
-        let out = normalize("<134>1 2026-08-15T19:40:20.123Z srv-alpha auth-api 1201 tx_882 - Login successful");
-        assert!(out.starts_with("RFC5424 <HOST> auth-api <NUM> tx_<NUM>"), "got: {out}");
+        let out = normalize(
+            "<134>1 2026-08-15T19:40:20.123Z srv-alpha auth-api 1201 tx_882 - Login successful",
+        );
+        assert!(
+            out.starts_with("RFC5424 <HOST> auth-api <NUM> tx_<NUM>"),
+            "got: {out}"
+        );
         assert!(out.contains("Login successful"), "got: {out}");
     }
 

@@ -12,7 +12,5 @@ pub use core::drain::{Drain, LogCluster};
 pub use core::format::{FormatDetector, LogFormat};
 pub use core::masking::{LogMasker, MaskConfig};
 pub use core::settings::Settings;
+pub use core::time::{CustomDateFormat, TimeComponents, TimeDetector, TimeFormat, TimeFormatKind};
 pub use core::timeline::{Timeline, TimelineDomain, DEFAULT_BUCKETS};
-pub use core::time::{
-    CustomDateFormat, TimeComponents, TimeDetector, TimeFormat, TimeFormatKind,
-};

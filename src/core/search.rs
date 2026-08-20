@@ -11,13 +11,15 @@ use crate::core::document::LogDocument;
 /// Build the shared automaton for a filter set (also used by the GUI for
 /// per-line highlighting of visible rows).
 pub fn build_automaton(filters: &[String]) -> Option<AhoCorasick> {
-    let pats: Vec<&str> = filters.iter().map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
+    let pats: Vec<&str> = filters
+        .iter()
+        .map(|k| k.trim())
+        .filter(|k| !k.is_empty())
+        .collect();
     if pats.is_empty() {
         return None;
     }
-    AhoCorasick::builder()
-        .build(pats)
-        .ok()
+    AhoCorasick::builder().build(pats).ok()
 }
 
 /// Scan the whole document for all filters in a single pass.
@@ -258,10 +260,16 @@ mod tests {
         assert_eq!(find_lines(&doc, None, "err", true, &cancel), vec![0, 1, 2]);
         // Line 1 is filtered out of the view, so it must not be reported.
         let subset = [0usize, 2, 3];
-        assert_eq!(find_lines(&doc, Some(&subset), "err", true, &cancel), vec![0, 2]);
+        assert_eq!(
+            find_lines(&doc, Some(&subset), "err", true, &cancel),
+            vec![0, 2]
+        );
         // Out-of-range subset entries are skipped, not panicked on.
         let stale = [0usize, 999];
-        assert_eq!(find_lines(&doc, Some(&stale), "err", true, &cancel), vec![0]);
+        assert_eq!(
+            find_lines(&doc, Some(&stale), "err", true, &cancel),
+            vec![0]
+        );
         std::fs::remove_file(path).ok();
     }
 

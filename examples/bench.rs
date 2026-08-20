@@ -46,11 +46,14 @@ fn main() {
     let mb = doc.file_size as f64 / (1024.0 * 1024.0);
 
     // Template quality metrics: cluster count, wildcard degradation, top patterns.
-    let degraded = doc.templates.iter().filter(|t| {
-        let toks: Vec<&str> = t.pattern.split_whitespace().collect();
-        !toks.is_empty()
-            && toks.iter().filter(|x| **x == "<*>").count() * 10 > toks.len() * 7
-    }).count();
+    let degraded = doc
+        .templates
+        .iter()
+        .filter(|t| {
+            let toks: Vec<&str> = t.pattern.split_whitespace().collect();
+            !toks.is_empty() && toks.iter().filter(|x| **x == "<*>").count() * 10 > toks.len() * 7
+        })
+        .count();
     let mut top: Vec<&logotomy::core::document::TemplateInfo> = doc.templates.iter().collect();
     top.sort_by_key(|t| std::cmp::Reverse(t.count));
 
@@ -58,16 +61,32 @@ fn main() {
     println!("│ file          : {}", doc.path.display());
     println!("│ size          : {:.1} MB", mb);
     println!("│ lines         : {}", doc.total_lines());
-    println!("│ templates     : {} ({} >70% wildcards)", doc.templates.len(), degraded);
+    println!(
+        "│ templates     : {} ({} >70% wildcards)",
+        doc.templates.len(),
+        degraded
+    );
     for t in top.iter().take(10) {
-        println!("│   #{:<4} x{:<8} {}", t.id, t.count, t.pattern.chars().take(80).collect::<String>());
+        println!(
+            "│   #{:<4} x{:<8} {}",
+            t.id,
+            t.count,
+            t.pattern.chars().take(80).collect::<String>()
+        );
     }
-    println!("│ time range    : {:?}", doc.time_range.map(|(a, b)| (
-        logotomy::core::time::format_ms(a),
-        logotomy::core::time::format_ms(b)
-    )));
+    println!(
+        "│ time range    : {:?}",
+        doc.time_range.map(|(a, b)| (
+            logotomy::core::time::format_ms(a),
+            logotomy::core::time::format_ms(b)
+        ))
+    );
     println!("│");
-    println!("│ load (index+mine+ts): {:>8.1?}  ({:.0} MB/s)", load_t, mb / load_t.as_secs_f64());
+    println!(
+        "│ load (index+mine+ts): {:>8.1?}  ({:.0} MB/s)",
+        load_t,
+        mb / load_t.as_secs_f64()
+    );
     println!("│ scan {:?}: {:>8.1?}", filters, scan_t);
     for (k, m) in filters.iter().zip(matches.iter()) {
         println!("│   {k:<12} hits = {}", m.len());
@@ -100,7 +119,8 @@ fn generate(path: &std::path::Path, target_bytes: u64) {
     while written < target_bytes {
         let ts = base_ms + (i * 37) as i64; // ~27 lines/sec
         let level = levels[(i % 97 / 24) as usize % 4];
-        let event = events[(i % events.len() as u64) as usize].replace("{n}", &(i % 7919).to_string());
+        let event =
+            events[(i % events.len() as u64) as usize].replace("{n}", &(i % 7919).to_string());
         let line = format!(
             "2025-07-13T{:02}:{:02}:{:02}.{:03}Z {} worker-{} {}\n",
             (ts / 3_600_000) % 24,
@@ -115,5 +135,9 @@ fn generate(path: &std::path::Path, target_bytes: u64) {
         f.write_all(line.as_bytes()).unwrap();
         i += 1;
     }
-    println!("generated {:.1} MB synthetic log: {}", written as f64 / 1e6, path.display());
+    println!(
+        "generated {:.1} MB synthetic log: {}",
+        written as f64 / 1e6,
+        path.display()
+    );
 }

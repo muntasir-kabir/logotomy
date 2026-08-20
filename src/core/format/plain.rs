@@ -40,11 +40,15 @@ impl LogFormat for Plain {
             Some((_, span)) => {
                 let mut owned = line.to_owned();
                 owned.replace_range(span.clone(), "");
-                let masked = ctx.masker.mask_with_header(&owned, ctx.header_slots, ctx.mask_cache);
+                let masked = ctx
+                    .masker
+                    .mask_with_header(&owned, ctx.header_slots, ctx.mask_cache);
                 Cow::Owned(masked.into_owned())
             }
             None => {
-                let masked = ctx.masker.mask_with_header(line, ctx.header_slots, ctx.mask_cache);
+                let masked = ctx
+                    .masker
+                    .mask_with_header(line, ctx.header_slots, ctx.mask_cache);
                 match masked {
                     Cow::Borrowed(_) => Cow::Borrowed(line),
                     Cow::Owned(o) => Cow::Owned(o),
@@ -75,11 +79,15 @@ pub(crate) fn learn_header_slots(sampled: &[String]) -> Vec<Option<&'static str>
         return Vec::new();
     }
     let n = sampled.len();
-    let tokenized: Vec<Vec<&str>> = sampled.iter().map(|l| l.split_whitespace().collect()).collect();
+    let tokenized: Vec<Vec<&str>> = sampled
+        .iter()
+        .map(|l| l.split_whitespace().collect())
+        .collect();
     let mut slots: Vec<Option<&'static str>> = Vec::new();
     for pos in 0..MAX_HEADER {
         let mut exact: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let mut class: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
+        let mut class: std::collections::HashMap<&'static str, usize> =
+            std::collections::HashMap::new();
         let mut present = 0usize;
         for toks in &tokenized {
             if let Some(tok) = toks.get(pos) {
@@ -129,7 +137,6 @@ pub(crate) fn learn_header_slots(sampled: &[String]) -> Vec<Option<&'static str>
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,9 +160,7 @@ mod tests {
 
     #[test]
     fn header_slots_learn_dynamic_position() {
-        let lines: Vec<String> = (0..100)
-            .map(|i| format!("worker-{} INFO msg", i))
-            .collect();
+        let lines: Vec<String> = (0..100).map(|i| format!("worker-{} INFO msg", i)).collect();
         let slots = learn_header_slots(&lines);
         assert_eq!(slots.first(), Some(&Some(crate::core::masking::MASK_NUM)));
     }
@@ -179,6 +184,9 @@ mod tests {
             })
             .collect();
         let slots = learn_header_slots(&lines);
-        assert!(slots.is_empty(), "header should stop at free text: {slots:?}");
+        assert!(
+            slots.is_empty(),
+            "header should stop at free text: {slots:?}"
+        );
     }
 }

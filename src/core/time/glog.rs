@@ -8,9 +8,8 @@ use regex::Regex;
 
 use super::{window, TimeFormat};
 
-static RE_GLOG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[IWEF]\d{4}\s\d{2}:\d{2}:\d{2}(?:\.\d+)?").unwrap()
-});
+static RE_GLOG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[IWEF]\d{4}\s\d{2}:\d{2}:\d{2}(?:\.\d+)?").unwrap());
 
 /// C++ glog `I0715 22:00:01.123456` timestamps (yearless).
 pub struct Glog;
