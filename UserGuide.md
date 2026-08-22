@@ -97,6 +97,7 @@ cargo build --release --no-default-features
 - click **📂 Open file**.
 - A **progress bar** shows real indexing progress (two stages: *Indexing lines*, then *Mining templates & timestamps*). Cancel with × if you dropped the wrong file.
 - Each file opens in its own **tab** — open as many as you like, close them with the × next to the tab name.
+- When a file is being appended (live tailing), new lines are indexed and template-mined in the background before appearing atomically. The current view stays responsive while this happens; truncation or in-place edits still require reopening the file.
 
 ### Custom date recognizers
 logotomy auto-detects the timestamp family (shown as `format: … · date: …` in the top bar). If your log uses a date shape it doesn't recognize, add your own:
@@ -117,8 +118,9 @@ logotomy auto-detects the timestamp family (shown as `format: … · date: …` 
 - **Right-click** any line for a context menu with **📌 Pin log** and **📝 Add analysis**.
 - The right edge has a **black scroll-position indicator bar** showing where you are in the file.
 - Log lines render in the embedded **Space Mono** monospace font (SIL OFL 1.1 — see the README thanks section); the **A− / A+** toolbar buttons change the size from 8 to 24 px.
+- Very long log rows are kept to one visual row and safely display a 2,000-byte Unicode-aware prefix, so an unusually large message cannot interrupt scrolling.
 - Filters you add (below) are **highlighted inline**, in the filter's color.
-- **Search box** (right side of toolbar): type a string and press **Enter** to find all occurrences in the visible log lines. Amber highlights mark every match. Use **▲/▼** (or Up/Down arrows) to step through matches; **Left/Right** arrows step when the search box is not focused. Press **Esc** to clear the search, or **Esc** again to clear a keyword highlight.
+- **Search box** (right side of toolbar): type a string and press **Enter** to find all occurrences in the visible log lines. Amber highlights mark every match. With multiple results, the Log View header shows Up/Down navigation and a shortcut hint toast; use **▲/▼** (or Up/Down arrows) to step through matches. Press **Esc** to clear the search, or **Esc** again to clear a keyword highlight.
 - **Double-click any word** in a log line to highlight every occurrence of that word in cyan. The word is also pre-filled into the search box — press **Enter** to turn it into a full search. Single-click anywhere clears the keyword highlight.
 
 ### Filter bookmarks
@@ -133,6 +135,7 @@ logotomy auto-detects the timestamp family (shown as `format: … · date: …` 
 - **Left column** shows filter names (up to 14 chars) with **👁 eye markers** (👁 = lane enabled, bold label; 🚫 = disabled, normal weight label). Click to toggle. The first lane is "Everything Else" — it has the eye toggle but **cannot be removed**.
 - **Hover a filter's name/eye** to see a tooltip with the **full filter text** and its **total match count**, e.g. `Some Filter (334 occurrences)`.
 - Each filter lane has a **🗑 trash icon** on the right of its label. Clicking it always asks for confirmation before removing the filter — unless you tick **"Do not ask me again"** in the popup (or enable *Settings → Do not ask before deleting a filter*).
+- Click a filter lane or one of its ◆ diamonds to select the lane. The Timeline header then shows previous/next navigation using Left/Right arrows; those keys select earlier/later occurrences and jump the Log View to that line.
 - **Bottom toolbar** (shown while filters exist, left-aligned):
   - **👁 Hide all filters / Show all filters** — toggles every filter lane at once; the **Everything Else** lane is never touched.
   - **🗑 Clear all filters** — removes every filter (behind a confirmation popup, following the same "do not ask again" preference).

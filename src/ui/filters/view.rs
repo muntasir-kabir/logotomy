@@ -40,7 +40,7 @@ pub fn add_filter_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             tab.filter_input.clear();
             resp.request_focus();
         }
-        if tab.search_rx.is_some() {
+        if tab.search_rx.is_some() || tab.visible_rx.is_some() {
             ui.spinner();
         }
     });

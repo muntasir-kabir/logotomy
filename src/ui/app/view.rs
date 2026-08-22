@@ -43,8 +43,15 @@ impl<'a> egui_dock::TabViewer for TabViewer<'a> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             ViewTab::Timeline => "Timeline".into(),
-            ViewTab::Log => "Log".into(),
-            ViewTab::Pinned => "Pinned".into(),
+            // Reserve visible trailing space for the resize affordance drawn
+            // at the right edge of these detachable tab titles. Non-breaking
+            // spaces ensure egui includes the padding in the measured width.
+            ViewTab::Log => {
+                "Log\u{00a0}\u{00a0}\u{00a0}\u{00a0}\u{00a0}\u{00a0}\u{00a0}\u{00a0}".into()
+            }
+            ViewTab::Pinned => {
+                "Pinned\u{00a0}\u{00a0}\u{00a0}\u{00a0}\u{00a0}\u{00a0}\u{00a0}\u{00a0}".into()
+            }
         }
     }
 
@@ -69,18 +76,14 @@ impl<'a> egui_dock::TabViewer for TabViewer<'a> {
 
     fn on_tab_button(&mut self, tab: &mut Self::Tab, response: &egui::Response) {
         // Replace the dock's default close button with a pop-out (window
-        // resize) button on the right edge of the Log and Pinned tab buttons.
-        // The close-button space is reserved (via `is_closeable`), so the
-        // icon sits in that reserved area without overlapping the title.
+        // resize) button on the right edge of each Log and Pinned tab title.
+        // The native close button is disabled on the DockArea. Keep the
+        // affordance at the title's trailing edge and handle its click here.
         if matches!(tab, ViewTab::Log | ViewTab::Pinned) {
             let ctx = response.ctx.clone();
             let btn_size = 14.0;
-            // The close button is centered in the reserved right-edge area.
-            let close_button_size = 24.0_f32.min(response.rect.height());
-            let btn_center = egui::Pos2::new(
-                response.rect.right() - close_button_size * 0.5,
-                response.rect.center().y,
-            );
+            let btn_center =
+                egui::Pos2::new(response.rect.right() - 12.0, response.rect.center().y);
             let btn_rect = egui::Rect::from_center_size(btn_center, egui::Vec2::splat(btn_size));
 
             let hovered = ctx
@@ -110,6 +113,55 @@ impl<'a> egui_dock::TabViewer for TabViewer<'a> {
             if hovered {
                 response.clone().on_hover_text("Pop out to a new window");
             }
+        }
+    }
+}
+
+/// Draw the resize affordance that replaces egui-dock's leaf close-all button.
+///
+/// The native button is disabled on the `DockArea` because its action closes a
+/// dock leaf. For Log and Pinned leaves the same location instead detaches the
+/// active view into a viewport window.
+fn draw_dock_resize_buttons(
+    ui: &mut egui::Ui,
+    dock_state: &DockState<ViewTab>,
+    tab_bar_height: f32,
+    log_tab: &mut LogTab,
+    theme: &Theme,
+) {
+    for (path, leaf) in dock_state.iter_leaves() {
+        let Some(active_view) = leaf.tabs.get(leaf.active.0) else {
+            continue;
+        };
+        if !matches!(active_view, ViewTab::Log | ViewTab::Pinned) {
+            continue;
+        }
+
+        let header_rect = egui::Rect::from_min_max(
+            egui::pos2(leaf.rect.right() - 24.0, leaf.rect.top()),
+            egui::pos2(leaf.rect.right(), leaf.rect.top() + tab_bar_height),
+        );
+        let response = ui.interact(
+            header_rect,
+            egui::Id::new(("dock_leaf_resize", path)),
+            egui::Sense::click(),
+        );
+        let color = if response.hovered() {
+            theme.text
+        } else {
+            theme.text_muted
+        };
+        icons::paint_icon(
+            ui.ctx(),
+            ui.painter(),
+            Icon::WindowResize,
+            header_rect.center(),
+            14.0,
+            color,
+        );
+        let response = response.on_hover_text("Pop out to a new window");
+        if response.clicked() {
+            log_tab.pending_detach = Some(*active_view);
         }
     }
 }
@@ -146,6 +198,7 @@ impl LogotomyApp {
         self.poll_loaders();
         self.poll_mcp_dirty();
         self.poll_mcp_filters();
+        self.poll_tail_updates();
         self.poll_file_updates();
         // Push any GUI-originated doc mutations (trim/append) into MCP state.
         self.sync_mcp_active_doc();
@@ -154,6 +207,9 @@ impl LogotomyApp {
         let mut any_search = false;
         for tab in &mut self.tabs {
             if tab.poll_search() {
+                any_search = true;
+            }
+            if tab.poll_visible_lines() {
                 any_search = true;
             }
             if tab.poll_find() {
@@ -559,13 +615,26 @@ impl LogotomyApp {
                 }
 
                 let mut dock_state = std::mem::replace(&mut tab.dock_state, DockState::new(vec![]));
+                let dock_path = tab.doc.path.clone();
                 let mut tab_viewer = TabViewer {
                     tab,
                     theme: &self.theme,
                 };
+                let dock_style = egui_dock::Style::from_egui(
+                    ui.ctx()
+                        .style_of(egui::Theme::from_dark_mode(self.dark_mode))
+                        .as_ref(),
+                );
+                let tab_bar_height = dock_style.tab_bar.height;
                 DockArea::new(&mut dock_state)
-                    .style(egui_dock::Style::from_egui(ui.ctx().style_of(egui::Theme::from_dark_mode(self.dark_mode)).as_ref()))
+                    .id(dock_area_id(dock_path.as_os_str()))
+                    .style(dock_style)
+                    // Log and Pinned are detachable, not closable. Their
+                    // resize affordances are rendered by TabViewer and below.
+                    .show_close_buttons(false)
+                    .show_leaf_close_all_buttons(false)
                     .show_inside(ui, &mut tab_viewer);
+                draw_dock_resize_buttons(ui, &dock_state, tab_bar_height, tab_viewer.tab, &self.theme);
                 tab.dock_state = dock_state;
             }
         });
@@ -887,6 +956,13 @@ impl LogotomyApp {
         }
 
         // Toast notification (self-dismissing, ~5s)
+        if let Some(idx) = self.active {
+            if let Some(tab) = self.tabs.get_mut(idx) {
+                if let Some(message) = tab.pending_toast.take() {
+                    self.show_toast(message);
+                }
+            }
+        }
         if let Some(at) = self.toast_at {
             if let Some(msg) = self.toast_message.clone() {
                 if at.elapsed() < Duration::from_secs(5) {
@@ -997,33 +1073,43 @@ impl LogotomyApp {
                                 let is_applied = self.active.map_or(false, |i| {
                                     self.tabs[i].applied_filter.as_deref() == Some(filter_name)
                                 });
-                                ui.horizontal(|ui| {
-                                    if ui.selectable_label(is_applied, filter_name).clicked() {
-                                        self.apply_filter(filter_name);
-                                        self.show_filter_dropdown = false;
-                                    }
-                                    if ui.button("Edit").on_hover_text("Rename filter").clicked() {
-                                        self.rename_filter_target = filter_name.clone();
-                                        self.rename_filter_new_name = filter_name.clone();
-                                        self.show_rename_filter_popup = true;
-                                        self.show_filter_dropdown = false;
-                                    }
-                                    let is_default = self.settings.default_filter.as_deref()
-                                        == Some(filter_name);
-                                    let star_icon = if is_default { "★" } else { "☆" };
-                                    if ui
-                                        .button(star_icon)
-                                        .on_hover_text("Set as default filter")
-                                        .clicked()
-                                    {
-                                        if is_default {
-                                            self.settings.default_filter = None;
-                                        } else {
-                                            self.settings.default_filter =
-                                                Some(filter_name.clone());
+                                // Keep the row identity tied to the saved filter name. Applying
+                                // a filter mutates the main UI while this popup is being drawn;
+                                // relying on auto IDs then makes egui see a different widget at
+                                // the same row rectangle on the next pass.
+                                ui.push_id(saved_filter_row_id(filter_name), |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.selectable_label(is_applied, filter_name).clicked() {
+                                            self.apply_filter(filter_name);
+                                            self.show_filter_dropdown = false;
                                         }
-                                        self.settings.save();
-                                    }
+                                        if ui
+                                            .button("Edit")
+                                            .on_hover_text("Rename filter")
+                                            .clicked()
+                                        {
+                                            self.rename_filter_target = filter_name.clone();
+                                            self.rename_filter_new_name = filter_name.clone();
+                                            self.show_rename_filter_popup = true;
+                                            self.show_filter_dropdown = false;
+                                        }
+                                        let is_default = self.settings.default_filter.as_deref()
+                                            == Some(filter_name);
+                                        let star_icon = if is_default { "★" } else { "☆" };
+                                        if ui
+                                            .button(star_icon)
+                                            .on_hover_text("Set as default filter")
+                                            .clicked()
+                                        {
+                                            if is_default {
+                                                self.settings.default_filter = None;
+                                            } else {
+                                                self.settings.default_filter =
+                                                    Some(filter_name.clone());
+                                            }
+                                            self.settings.save();
+                                        }
+                                    });
                                 });
                             }
                         });
@@ -1041,6 +1127,14 @@ impl LogotomyApp {
             }
         }
     }
+}
+
+fn saved_filter_row_id(filter_name: &str) -> egui::Id {
+    egui::Id::new(("saved_filter_row", filter_name))
+}
+
+fn dock_area_id(path: &std::ffi::OsStr) -> egui::Id {
+    egui::Id::new(("logotomy_dock_area", path))
 }
 
 fn template_browser(ui: &mut egui::Ui, tab: &mut LogTab) {
@@ -1064,6 +1158,7 @@ fn template_browser(ui: &mut egui::Ui, tab: &mut LogTab) {
                 );
                 if resp.clicked() {
                     tab.context_line = Some(example_line);
+                    tab.sync_timeline_selection_to_line(example_line);
                     tab.pending_scroll = Some(example_line);
                 }
                 if resp.hovered() {
@@ -1071,4 +1166,35 @@ fn template_browser(ui: &mut egui::Ui, tab: &mut LogTab) {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::{dock_area_id, saved_filter_row_id};
+
+    #[test]
+    fn saved_filter_row_ids_are_stable_and_distinct() {
+        assert_eq!(
+            saved_filter_row_id("Default-1"),
+            saved_filter_row_id("Default-1")
+        );
+        assert_ne!(
+            saved_filter_row_id("Default-1"),
+            saved_filter_row_id("Default-2")
+        );
+    }
+
+    #[test]
+    fn dock_area_ids_are_stable_and_distinct_per_document() {
+        assert_eq!(
+            dock_area_id(OsStr::new("iOS-1K.log")),
+            dock_area_id(OsStr::new("iOS-1K.log"))
+        );
+        assert_ne!(
+            dock_area_id(OsStr::new("iOS-1K.log")),
+            dock_area_id(OsStr::new("android.log"))
+        );
+    }
 }

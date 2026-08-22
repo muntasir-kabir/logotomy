@@ -1,3 +1,59 @@
+# Fix: stabilize saved-filter popup widget IDs
+
+Saved-filter rows and per-document dock areas now use stable IDs, preventing egui from warning that popup or dock widgets changed identity between layout passes during filter application and tab changes.
+
+# UI: synchronize timeline and Log View selection navigation
+
+Timeline lane clicks now move directly to arbitrary lines while preserving the clicked lane, Log View Up/Down navigates search occurrences or visible lines as appropriate, and selected lanes remain stable when the log selection changes. Timeline occurrence status is emphasized and shown only for matching selected lines. Detachable Log and Pinned views use overlapping-window resize controls.
+
+# UI: add spacing before detachable tab resize icons
+
+Added wider title padding to the Log and Pinned dock tabs so their labels no longer sit beneath the resize icon at compact tab widths.
+
+# Fix: replace all dock close controls for detachable views
+
+Disabled the native egui-dock close buttons for Log and Pinned views and added real resize-icon hit targets in each tab title and dock header, so no misleading close glyph remains.
+
+# UI: identify detachable Log and Pinned views with a resize icon
+
+The Log and Pinned dock-tab title controls now show a valid overlapping-window resize icon instead of a confusing close glyph; detached viewport close behavior is unchanged.
+
+# Fix: preserve the log position after timeline lane toggles
+
+After a timeline visibility change completes, the log view now explicitly scrolls to the nearest remaining line from the prior viewport. This prevents egui's retained scroll state from resetting the view to the start of the log.
+
+# Performance: stage live-tail updates off the UI thread
+
+Appended log data is now indexed and template-mined on a background worker, then atomically swapped into the view. The staged document has independent mutable mining state, preventing live tailing from blocking scrolling or mutating the document currently read by the UI/MCP server.
+
+# Performance: halve GUI filter-match index memory
+
+The GUI now stores filter match line IDs as compact 32-bit values rather than platform-sized integers. This halves the retained match-index memory on 64-bit systems for high-cardinality filters.
+
+# Performance: rebuild filtered log indexes in the background
+
+Changing timeline lane visibility now builds the filtered real-line index on a cancellable worker while the current log view remains responsive. Filter matches are shared between the scanner and this worker instead of being copied for each toggle.
+
+# Fix: keep selected timeline diamonds stable while zooming
+
+Timeline diamond selection now stores the matching real line number instead of a zoom-slice-local point offset, so the selected marker remains attached to the same occurrence as the visible range changes.
+
+# Performance: bound high-cardinality masking cache memory
+
+The token masking cache now retains at most 65,536 unique entries. Additional unique tokens are still masked correctly for their current line but no longer grow document memory indefinitely.
+
+# Performance: aggregate timeline painting to screen pixels
+
+The timeline histogram, dense filter lanes, and minimap now aggregate stored buckets into screen columns before painting. This preserves hover/navigation data while reducing per-frame egui paint commands on large logs.
+
+# Performance: keep filter completion off the UI thread
+
+The filter worker now builds the corresponding timeline before returning its result, so installing completed filters no longer performs a full document walk on the next UI frame.
+
+# Performance: reduce large-log UI stalls and document memory
+
+Live-tail polling now checks file metadata before copy-on-write, filtered find scans share their visible-line index, and selected filtered ranges use binary search. Log rows avoid per-byte highlighting allocations, safely cap Unicode long lines, and the document no longer retains unused original-timestamp or timestamp-span arrays.
+
 # Maintenance: restore Rust formatting consistency
 
 Ran the repository-wide Rust formatter to remove formatting drift and keep source files consistent with `cargo fmt --check`.
@@ -335,3 +391,6 @@ Added a "🤖 Integrate" button that opens a scrollable popup with per-agent con
 # Fix: compact yellow filter controls and selection popup behavior
 
 Made timeline/log filter controls compact with a light yellow treatment and trailing Enter affordance, removed the log header line-count text and row-number gutter, and improved selection pin popup placement and auto-dismiss behavior.
+# UI: navigate selected filter lanes and multi-result searches with arrow keys
+
+Filter lanes can now be selected by clicking their row or an occurrence diamond. Left/Right arrows navigate the selected lane's occurrences, while Up/Down arrows navigate multi-result Log View searches; contextual headers, SVG arrows, and shortcut toasts explain the controls.

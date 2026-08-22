@@ -20,8 +20,12 @@ use std::borrow::Cow;
 /// Per-document memo cache: raw token → masked replacement (`None` = keep
 /// as-is). Log vocabularies are small and repetitive, so after a few hundred
 /// lines nearly every token is a cache hit — no classification, no alloc.
+/// The cache is bounded so high-cardinality logs cannot retain every unique
+/// request ID, path, or payload token for the lifetime of the document.
 #[derive(Default, Clone)]
 pub struct MaskCache(FxHashMap<Box<str>, Option<Box<str>>>);
+
+const MASK_CACHE_MAX_ENTRIES: usize = 65_536;
 
 /// Semantic mask tokens (more readable than generic `<*>`)
 pub const MASK_IP: &str = "<IP>";
@@ -115,7 +119,7 @@ impl LogMasker {
                 }
                 changed = true;
             } else if let Some(masked) = self.cached_mask(tok, cache) {
-                out.push_str(masked);
+                out.push_str(&masked);
                 changed = true;
             } else {
                 out.push_str(tok);
@@ -129,16 +133,32 @@ impl LogMasker {
     }
 
     /// Cached token classification: hit = borrow from the cache, miss =
-    /// classify once and memoize. Returns the replacement string, if any.
-    fn cached_mask<'c>(&self, tok: &str, cache: &'c mut MaskCache) -> Option<&'c str> {
-        // NLL workaround: `if let Some(e) = get { return ... }` would hold the
-        // borrow across the insert below, so probe first, then re-fetch.
+    /// classify once and memoize while capacity remains. Returns the
+    /// replacement string, if any.
+    fn cached_mask<'c>(&self, tok: &str, cache: &'c mut MaskCache) -> Option<Cow<'c, str>> {
+        // Probe first so the immutable cache borrow ends before a possible
+        // insert below.
         if cache.0.contains_key(tok) {
-            return cache.0.get(tok).and_then(|m| m.as_deref());
+            return cache
+                .0
+                .get(tok)
+                .and_then(|m| m.as_deref())
+                .map(Cow::Borrowed);
         }
         let masked = self.mask_token(tok).map(|m| Box::<str>::from(m.as_ref()));
-        cache.0.insert(Box::from(tok), masked);
-        cache.0.get(tok).and_then(|m| m.as_deref())
+        if cache.0.len() < MASK_CACHE_MAX_ENTRIES {
+            cache.0.insert(Box::from(tok), masked);
+            return cache
+                .0
+                .get(tok)
+                .and_then(|m| m.as_deref())
+                .map(Cow::Borrowed);
+        }
+
+        // Do not retain unbounded unique tokens. A replacement still applies
+        // to this line, but it remains short-lived instead of entering the
+        // document-wide memo table.
+        masked.map(|value| Cow::Owned(value.into_string()))
     }
 
     /// Classify one token. Returns `None` to keep it, or `Some(replacement)`
@@ -797,5 +817,22 @@ mod tests {
         // No digits at all → no inner runs to detect.
         assert_eq!(classify_token_public("pure-text"), None);
         assert_eq!(classify_token_public("hello_world"), None);
+    }
+
+    #[test]
+    fn cache_stops_retaining_unique_tokens_at_capacity() {
+        let masker = LogMasker::default();
+        let mut cache = MaskCache::default();
+        for i in 0..=MASK_CACHE_MAX_ENTRIES {
+            let token = format!("request-{i}");
+            let _ = masker.cached_mask(&token, &mut cache);
+        }
+
+        assert_eq!(cache.0.len(), MASK_CACHE_MAX_ENTRIES);
+        assert_eq!(
+            masker.cached_mask("42", &mut cache).as_deref(),
+            Some(MASK_NUM)
+        );
+        assert_eq!(cache.0.len(), MASK_CACHE_MAX_ENTRIES);
     }
 }

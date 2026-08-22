@@ -58,6 +58,42 @@ pub fn scan_document(
     out
 }
 
+/// GUI-oriented variant of [`scan_document`] that stores line indexes as
+/// `u32`. A log with more than four billion addressable lines cannot be held
+/// by this application in practice, while this halves the memory of dense
+/// multi-filter results on 64-bit platforms.
+pub fn scan_document_u32(
+    doc: &LogDocument,
+    filters: &[String],
+    cancel: &AtomicBool,
+) -> Vec<Vec<u32>> {
+    let mut out = vec![Vec::new(); filters.len()];
+    let Some(ac) = build_automaton(filters) else {
+        return out;
+    };
+    let mut hit = vec![false; filters.len()];
+    let mut touched: Vec<usize> = Vec::with_capacity(filters.len());
+    for i in 0..doc.total_lines() {
+        if i % 16_384 == 0 && cancel.load(Ordering::Relaxed) {
+            return out;
+        }
+        let line = doc.line(i);
+        for m in ac.find_iter(line.as_ref()) {
+            let p = m.pattern().as_usize();
+            if !hit[p] {
+                hit[p] = true;
+                touched.push(p);
+            }
+        }
+        for &p in &touched {
+            hit[p] = false;
+            out[p].push(i as u32);
+        }
+        touched.clear();
+    }
+    out
+}
+
 /// Build a single-pattern automaton for the log view's find box / keyword
 /// highlight. Unlike `build_automaton` (filter set, always case-sensitive) this
 /// can fold ASCII case, which is what a find box is expected to do.
@@ -192,6 +228,15 @@ mod tests {
         let filters = vec!["error".to_string()];
         let m = scan_document(&doc, &filters, &AtomicBool::new(false));
         assert_eq!(m[0], vec![0]);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn compact_scan_matches_usize_scan() {
+        let (doc, path) = doc_with("alpha\nbeta alpha\ngamma\n");
+        let filters = vec!["alpha".to_string(), "beta".to_string()];
+        let compact = scan_document_u32(&doc, &filters, &AtomicBool::new(false));
+        assert_eq!(compact, vec![vec![0, 1], vec![1]]);
         std::fs::remove_file(path).ok();
     }
 

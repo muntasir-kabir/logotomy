@@ -84,7 +84,18 @@ pub enum LoadProgress {
     Error(String),
 }
 
-#[derive(Clone)]
+/// Result of checking whether the source file changed since this document was
+/// loaded. This deliberately borrows the document immutably so callers that
+/// share a `LogDocument` through an `Arc` can avoid cloning all per-line
+/// indexes when the usual live-tail poll finds no new data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileChange {
+    Unchanged,
+    Appended,
+    Shrunk,
+    Modified,
+}
+
 pub struct LogDocument {
     pub path: PathBuf,
     pub file_name: String,
@@ -93,19 +104,11 @@ pub struct LogDocument {
     #[doc(hidden)]
     file_handle: Arc<File>, // Keep the file handle to maintain the lock
     pub line_offsets: Vec<u64>,
-    /// Per-line extracted timestamp (epoch ms), if the line carried one.
-    /// Indexed by *original* (untrimmed) line index. Use `ts_at` for
-    /// trim-relative access.
-    timestamps: Vec<Option<i64>>,
     /// Forward-filled timestamps: untimestamped lines (stack traces, etc.)
     /// inherit the previous line's time. -1 before the first known timestamp.
     /// Indexed by *original* (untrimmed) line index. Use `ts_at` for
     /// trim-relative access.
     ts_ff: Vec<i64>,
-    /// Byte-offset spans of matched timestamps within each line.
-    /// `None` for lines without a detected timestamp.
-    /// Indexed by *original* (untrimmed) line index.
-    ts_spans: Vec<Option<std::ops::Range<usize>>>,
     /// Per-line Drain template cluster ID.
     /// Indexed by *original* (untrimmed) line index. Use `template_at` for
     /// trim-relative access.
@@ -139,6 +142,37 @@ pub struct LogDocument {
     pub trim_start: usize,
     /// One-past-the-last line index of the visible range. Defaults to total_lines().
     pub trim_end: usize,
+}
+
+// A copy-on-write document must not share its mutable Drain state. Sharing it
+// makes an appended background copy alter clustering behind the still-rendered
+// document's back. The mmap/file handle remain cheap shared Arcs; per-line
+// indexes and mutable mining state are independent.
+impl Clone for LogDocument {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            file_name: self.file_name.clone(),
+            data: Arc::clone(&self.data),
+            file_handle: Arc::clone(&self.file_handle),
+            line_offsets: self.line_offsets.clone(),
+            ts_ff: self.ts_ff.clone(),
+            template_ids: self.template_ids.clone(),
+            drain: Arc::new(Mutex::new(self.drain.lock().unwrap().clone())),
+            masker: self.masker.clone(),
+            header_slots: self.header_slots.clone(),
+            mask_cache: self.mask_cache.clone(),
+            log_format: self.log_format,
+            time_format: self.time_format.clone(),
+            templates: self.templates.clone(),
+            time_range: self.time_range,
+            file_size: self.file_size,
+            file_mtime: self.file_mtime,
+            max_line_width: self.max_line_width,
+            trim_start: self.trim_start,
+            trim_end: self.trim_end,
+        }
+    }
 }
 
 impl LogDocument {
@@ -299,6 +333,18 @@ impl LogDocument {
     /// Checks for appended data and incrementally loads it.
     /// Returns `Ok(true)` if new data was loaded, `Ok(false)` if no change.
     pub fn append_new_data(&mut self) -> Result<bool, String> {
+        let change = self.file_change()?;
+        match change {
+            FileChange::Unchanged => return Ok(false),
+            FileChange::Shrunk => {
+                return Err("file has shrunk on disk; a full reload is required".to_string());
+            }
+            FileChange::Modified => {
+                return Err("file has changed on disk; a full reload is required".to_string());
+            }
+            FileChange::Appended => {}
+        }
+
         let new_meta = self
             .file_handle
             .metadata()
@@ -307,17 +353,6 @@ impl LogDocument {
         let new_mtime = new_meta
             .modified()
             .map_err(|e| format!("failed to get file modification time: {e}"))?;
-
-        // Detect shrink or in-place modification (same size, different mtime).
-        if new_size < self.file_size {
-            return Err("file has shrunk on disk; a full reload is required".to_string());
-        }
-        if new_size == self.file_size {
-            if new_mtime != self.file_mtime {
-                return Err("file has changed on disk; a full reload is required".to_string());
-            }
-            return Ok(false);
-        }
 
         // --- File has grown, load new data ---
         log::info!(
@@ -378,6 +413,32 @@ impl LogDocument {
         }
 
         Ok(true)
+    }
+
+    /// Check the backing file without changing the mmap or any indexes.
+    ///
+    /// A caller should use this before `Arc::make_mut`: an unchanged poll is
+    /// the common live-tail case and must not copy a shared document merely to
+    /// discover that there is nothing to do.
+    pub fn file_change(&self) -> Result<FileChange, String> {
+        let meta = self
+            .file_handle
+            .metadata()
+            .map_err(|e| format!("failed to get file metadata: {e}"))?;
+        let size = meta.len();
+        let mtime = meta
+            .modified()
+            .map_err(|e| format!("failed to get file modification time: {e}"))?;
+
+        Ok(if size < self.file_size {
+            FileChange::Shrunk
+        } else if size > self.file_size {
+            FileChange::Appended
+        } else if mtime != self.file_mtime {
+            FileChange::Modified
+        } else {
+            FileChange::Unchanged
+        })
     }
 
     /// Blocking load (MCP server, tests). No progress reporting.
@@ -481,7 +542,7 @@ impl LogDocument {
                 }
             }
 
-            let (line_len, ts_span, ts, template_id) = {
+            let (line_len, ts, template_id) = {
                 let line = self.line_untrimmed(i);
                 let line_len = line.len();
                 let ts_hint = time_format.as_ref().and_then(|e| e.extract(&line));
@@ -495,11 +556,8 @@ impl LogDocument {
                 };
                 let normalized = log_format.normalize(&line, ts_hint, &mut ctx);
                 let template_id = drain.add_line(&normalized.content, i);
-                let (ts, ts_span) = match normalized.ts {
-                    Some((t, s)) => (Some(t), Some(s)),
-                    None => (None, None),
-                };
-                (line_len, ts_span, ts, template_id)
+                let ts = normalized.ts.map(|(timestamp, _)| timestamp);
+                (line_len, ts, template_id)
             };
 
             self.max_line_width = self.max_line_width.max(line_len);
@@ -508,8 +566,6 @@ impl LogDocument {
                 min_ts = min_ts.min(t);
                 max_ts = max_ts.max(t);
             }
-            self.timestamps.push(ts);
-            self.ts_spans.push(ts_span);
             self.ts_ff.push(last_ts);
             self.template_ids.push(template_id);
         }
@@ -642,9 +698,7 @@ impl LogDocument {
             data: Arc::new(mmap),
             file_handle: file_arc,
             line_offsets: offsets,
-            timestamps: Vec::with_capacity(n_lines),
             ts_ff: Vec::with_capacity(n_lines),
-            ts_spans: Vec::with_capacity(n_lines),
             template_ids: Vec::with_capacity(n_lines),
             drain: Arc::new(Mutex::new(Drain::new(
                 config.drain_depth,
@@ -771,7 +825,7 @@ mod tests {
             "2026-07-19T10:00:00.000Z INFO boom\n    at stack.frame(Foo.rs:1)\n2026-07-19T10:00:01.000Z INFO next\n",
         );
         let doc = LogDocument::open(&path).unwrap();
-        assert_eq!(doc.timestamps[1], None);
+        assert_eq!(doc.ts_at(1), doc.ts_at(0));
         assert_eq!(doc.ts_ff[1], doc.ts_ff[0]); // inherits previous
         assert!(doc.ts_ff[2] > doc.ts_ff[1]);
         std::fs::remove_file(path).ok();
@@ -1537,9 +1591,10 @@ mod tests {
             "same log message should share template even with different timestamps"
         );
 
-        // Verify ts_spans are populated for all timestamped lines
+        // All lines retain their extracted timestamp through the compact
+        // forward-filled timestamp index.
         for i in 0..5 {
-            assert!(doc.ts_spans[i].is_some(), "line {i} should have a ts_span");
+            assert!(doc.ts_at(i) >= 0, "line {i} should have a timestamp");
         }
 
         // Verify the pattern is clean (no timestamp tokens in the template)
@@ -1630,6 +1685,7 @@ mod tests {
         let mut doc = LogDocument::open(&path).unwrap();
         assert_eq!(doc.total_lines(), 2);
         assert_eq!(doc.line(1).as_ref(), "2026-07-19T10:00:01.000Z INFO line 2");
+        assert_eq!(doc.file_change().unwrap(), FileChange::Unchanged);
 
         let path_clone = path.clone();
         let append_thread = thread::spawn(move || {
@@ -1643,6 +1699,7 @@ mod tests {
 
         append_thread.join().unwrap();
 
+        assert_eq!(doc.file_change().unwrap(), FileChange::Appended);
         let appended = doc.append_new_data().unwrap();
         assert!(appended);
 
@@ -1666,7 +1723,29 @@ mod tests {
             3,
             "line count should be unchanged after no-op append"
         );
+        assert_eq!(doc.file_change().unwrap(), FileChange::Unchanged);
 
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn cloned_document_detaches_mining_state_for_background_append() {
+        let path = write_temp("2026-07-19T10:00:00.000Z INFO first\n");
+        let doc = LogDocument::open(&path).unwrap();
+        let mut staged = doc.clone();
+        assert!(
+            !Arc::ptr_eq(&doc.drain, &staged.drain),
+            "a staged append must not mutate the displayed document's Drain state"
+        );
+        std::fs::File::options()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"2026-07-19T10:00:01.000Z WARN second\n")
+            .unwrap();
+        assert!(staged.append_new_data().unwrap());
+        assert_eq!(doc.total_lines(), 1);
+        assert_eq!(staged.total_lines(), 2);
         std::fs::remove_file(path).ok();
     }
 

@@ -5,7 +5,9 @@
 //! Also provides a right-click context menu (pin / add analysis) and a
 //! scroll-position indicator bar on the right edge.
 
+use std::borrow::Cow;
 use std::cell::Cell;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aho_corasick::AhoCorasick;
@@ -19,9 +21,9 @@ use crate::ui::app::model::{Filter, LogTab, PinEntry, TrimAction, MAX_FILTERS};
 use crate::ui::icons::{self, Icon};
 use crate::ui::theme::Theme;
 
-/// Characters beyond this are cut off when rendering a single row.
+/// Bytes beyond this are cut off when rendering a single row.
 /// (The full bytes stay in the mmap; we just don't paint a novel per frame.)
-const MAX_DISPLAY_CHARS: usize = 2000;
+const MAX_DISPLAY_BYTES: usize = 2000;
 /// Width of the scroll-position indicator bar.
 const SCROLL_BAR_WIDTH: f32 = 8.0;
 /// Minimum pointer displacement (px) to distinguish a drag from a click.
@@ -150,6 +152,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
                         Some(RowAction::Select) if !suppress_select => {
                             tab.set_keyword_highlight(None);
                             tab.context_line = Some(i);
+                            tab.sync_timeline_selection_to_line(i);
                             tab.ensure_visible();
                         }
                         Some(RowAction::Pin) => {
@@ -192,20 +195,37 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     update_viewport_range(tab, &rendered_range, pending);
 
     // ---- arrow-key find navigation ----
-    if tab.pin_modal.is_none() && tab.pending_selection.is_none() && !tab.find_matches.is_empty() {
+    if tab.pin_modal.is_none() && tab.pending_selection.is_none() {
         let search_has_focus = tab.find_rx.is_some() || !tab.find_query.is_empty();
+        let search_input_focused = ui
+            .ctx()
+            .memory(|memory| memory.has_focus(egui::Id::new("log_find_input")));
         ui.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) && !search_has_focus {
-                tab.find_prev();
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+                && !search_input_focused
+                && (tab.selected_lane.is_some() || !search_has_focus)
+            {
+                if tab.selected_lane.is_some() {
+                    tab.select_lane_previous();
+                } else {
+                    tab.find_prev();
+                }
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) && !search_has_focus {
-                tab.find_next();
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+                && !search_input_focused
+                && (tab.selected_lane.is_some() || !search_has_focus)
+            {
+                if tab.selected_lane.is_some() {
+                    tab.select_lane_next();
+                } else {
+                    tab.find_next();
+                }
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
-                tab.find_prev();
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) && !search_input_focused {
+                navigate_vertical(tab, false);
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
-                tab.find_next();
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) && !search_input_focused {
+                navigate_vertical(tab, true);
             }
         });
     }
@@ -313,7 +333,7 @@ pub fn show(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     if let Some(pending_range) = tab.pending_selection {
         let (start, end) = pending_range;
         let count = match &tab.visible_lines {
-            Some(vis) => vis.iter().filter(|&&ln| ln >= start && ln <= end).count(),
+            Some(vis) => visible_lines_in_range(vis, start, end).len(),
             None => end - start + 1,
         };
 
@@ -403,11 +423,7 @@ pub fn pin_modal_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
     let (start, end) = range;
     // Compute the actual visible lines within the range (respects text filters).
     let visible_in_range: Vec<usize> = match &tab.visible_lines {
-        Some(vis) => vis
-            .iter()
-            .filter(|&&ln| ln >= start && ln <= end)
-            .copied()
-            .collect(),
+        Some(vis) => visible_lines_in_range(vis, start, end).to_vec(),
         None => (start..=end).collect(),
     };
     let actual_count = visible_in_range.len();
@@ -563,11 +579,7 @@ fn save_pin(tab: &mut LogTab, range: (usize, usize)) {
     // When visible_lines is active (filtered view), only include lines that
     // are actually visible, since the user's selection spans virtual indices.
     let line_numbers: Vec<usize> = match &tab.visible_lines {
-        Some(vis) => vis
-            .iter()
-            .filter(|&&ln| ln >= start && ln <= end)
-            .copied()
-            .collect(),
+        Some(vis) => visible_lines_in_range(vis, start, end).to_vec(),
         None => (start..=end).collect(),
     };
     let start_ts = tab.doc.ts_at_opt(start).unwrap_or(-1);
@@ -597,6 +609,16 @@ fn save_pin(tab: &mut LogTab, range: (usize, usize)) {
     tab.pin_edit_index = None;
     tab.pin_comment.clear();
     tab.bottom_panel_open = true;
+}
+
+fn navigate_vertical(tab: &mut LogTab, next: bool) {
+    if tab.find_matches.is_empty() {
+        tab.select_adjacent_line(next);
+    } else if next {
+        tab.find_next();
+    } else {
+        tab.find_prev();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -718,8 +740,6 @@ fn show_search_ui(ui: &mut egui::Ui, tab: &mut LogTab, theme: &Theme) {
             } else {
                 tab.find_next();
             }
-            // Regain focus so a second Enter (or more typing) keeps working.
-            input_resp.request_focus();
         }
 
         if !tab.find_matches.is_empty() {
@@ -897,7 +917,7 @@ fn row_under_pointer(
     scroll_offset: f32,
     row_height: f32,
     total_visible: usize,
-    visible_lines: &Option<Vec<usize>>,
+    visible_lines: &Option<Arc<Vec<usize>>>,
 ) -> Option<usize> {
     let pointer = ui.input(|i| i.pointer.latest_pos())?;
     if pointer.x < inner_rect.left()
@@ -914,6 +934,15 @@ fn row_under_pointer(
         Some(vis) => vis.get(virtual_idx).copied(),
         None => Some(virtual_idx),
     }
+}
+
+/// The filtered visible-line list is sorted by real line number. Range
+/// selection and pinning should therefore use two binary searches instead of
+/// walking every visible line each frame.
+fn visible_lines_in_range(lines: &[usize], start: usize, end: usize) -> &[usize] {
+    let first = lines.partition_point(|&line| line < start);
+    let last = lines.partition_point(|&line| line <= end);
+    &lines[first..last]
 }
 
 /// Render a single log row, returning an action to be applied by the caller.
@@ -1021,7 +1050,9 @@ fn render_row(
 /// Keep native egui text selection enabled for log content. Whole-line drag
 /// selection remains handled by `show` for pinning selected rows.
 fn log_content_label(job: egui::text::LayoutJob) -> egui::Label {
-    egui::Label::new(job).selectable(true)
+    // Virtual rows have a fixed height, so log content must never wrap into
+    // the next row. The enclosing scroll area clips horizontally.
+    egui::Label::new(job).selectable(true).extend()
 }
 
 /// Apply the deferred pin / trim actions from the context menu.
@@ -1200,17 +1231,7 @@ pub fn line_job(
     );
     */
 
-    let truncated;
-    let text: &str = if line.len() > MAX_DISPLAY_CHARS {
-        truncated = format!(
-            "{}  …[{} bytes total, truncated]",
-            line.get(..MAX_DISPLAY_CHARS).unwrap_or(&line),
-            line.len()
-        );
-        &truncated
-    } else {
-        &line
-    };
+    let text = display_text(&line);
 
     let base = theme.log_text;
     match (
@@ -1219,12 +1240,12 @@ pub fn line_job(
         highlights.keyword_ac,
     ) {
         (None, None, None) => {
-            job.append(text, 0.0, fmt(base));
+            job.append(&text, 0.0, fmt(base));
         }
         (filter_ac, search_ac, keyword_ac) => {
             append_highlighted(
                 &mut job,
-                text,
+                &text,
                 filter_ac,
                 search_ac,
                 keyword_ac,
@@ -1236,6 +1257,25 @@ pub fn line_job(
         }
     }
     job
+}
+
+/// Return either the original line or a UTF-8-safe display prefix. The old
+/// byte slice fell back to the *whole* line when its limit landed inside a
+/// multi-byte character, defeating the long-line render guard.
+fn display_text(line: &str) -> Cow<'_, str> {
+    if line.len() <= MAX_DISPLAY_BYTES {
+        return Cow::Borrowed(line);
+    }
+
+    let mut end = MAX_DISPLAY_BYTES;
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    Cow::Owned(format!(
+        "{}  …[{} bytes total, truncated]",
+        &line[..end],
+        line.len()
+    ))
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1258,101 +1298,121 @@ fn append_highlighted(
     font_id: FontId,
     theme: &Theme,
 ) {
-    let mut owner: Vec<Option<Hl>> = vec![None; text.len()];
-    let mut any = false;
+    // Keep only the actual matched intervals. The former implementation
+    // allocated an owner slot for every displayed byte of every visible row,
+    // even when the row contained no match.
+    let mut spans: Vec<(std::ops::Range<usize>, Hl)> = Vec::new();
+    let mut covered: Vec<std::ops::Range<usize>> = Vec::new();
 
     if let Some(ac) = search_ac {
         for m in ac.find_iter(text) {
-            for slot in &mut owner[m.start()..m.end()] {
-                if slot.is_none() {
-                    *slot = Some(Hl::Search);
-                    any = true;
-                }
-            }
+            add_highlight_span(&mut spans, &mut covered, m.start()..m.end(), Hl::Search);
         }
     }
     if let Some(ac) = keyword_ac {
         for m in ac.find_iter(text) {
-            for slot in &mut owner[m.start()..m.end()] {
-                if slot.is_none() {
-                    *slot = Some(Hl::Keyword);
-                    any = true;
-                }
-            }
+            add_highlight_span(&mut spans, &mut covered, m.start()..m.end(), Hl::Keyword);
         }
     }
     if let Some(ac) = filter_ac {
         for m in ac.find_iter(text) {
             let kw = m.pattern().as_usize();
-            for slot in &mut owner[m.start()..m.end()] {
-                if slot.is_none() {
-                    *slot = Some(Hl::Filter(kw));
-                    any = true;
-                }
-            }
+            add_highlight_span(&mut spans, &mut covered, m.start()..m.end(), Hl::Filter(kw));
         }
     }
 
-    if !any {
+    if spans.is_empty() {
         job.append(text, 0.0, base_fmt);
         return;
     }
 
+    spans.sort_by_key(|(range, _)| range.start);
     let mut pos = 0;
-    while pos < text.len() {
-        let cur = owner[pos];
-        let mut end = pos + 1;
-        while end < text.len() && owner[end] == cur {
-            end += 1;
+    for (range, hl) in spans {
+        if pos < range.start {
+            job.append(&text[pos..range.start], 0.0, base_fmt.clone());
         }
-        if let Some(seg) = text.get(pos..end) {
-            match cur {
-                Some(Hl::Filter(kw)) => {
-                    let color = filters.get(kw).map(|k| k.color).unwrap_or(Color32::YELLOW);
-                    let bg_alpha =
-                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 51);
-                    job.append(
-                        seg,
-                        0.0,
-                        egui::text::TextFormat {
-                            font_id: font_id.clone(),
-                            color,
-                            background: bg_alpha,
-                            ..Default::default()
-                        },
-                    );
-                }
-                Some(Hl::Search) => {
-                    job.append(
-                        seg,
-                        0.0,
-                        egui::text::TextFormat {
-                            font_id: font_id.clone(),
-                            color: base_fmt.color,
-                            background: theme.search_highlight_bg,
-                            ..Default::default()
-                        },
-                    );
-                }
-                Some(Hl::Keyword) => {
-                    job.append(
-                        seg,
-                        0.0,
-                        egui::text::TextFormat {
-                            font_id: font_id.clone(),
-                            color: base_fmt.color,
-                            background: theme.keyword_highlight_bg,
-                            ..Default::default()
-                        },
-                    );
-                }
-                None => {
-                    job.append(seg, 0.0, base_fmt.clone());
-                }
+        let segment = &text[range.clone()];
+        match hl {
+            Hl::Filter(kw) => {
+                let color = filters.get(kw).map(|k| k.color).unwrap_or(Color32::YELLOW);
+                let bg_alpha = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 51);
+                job.append(
+                    segment,
+                    0.0,
+                    egui::text::TextFormat {
+                        font_id: font_id.clone(),
+                        color,
+                        background: bg_alpha,
+                        ..Default::default()
+                    },
+                );
             }
+            Hl::Search => job.append(
+                segment,
+                0.0,
+                egui::text::TextFormat {
+                    font_id: font_id.clone(),
+                    color: base_fmt.color,
+                    background: theme.search_highlight_bg,
+                    ..Default::default()
+                },
+            ),
+            Hl::Keyword => job.append(
+                segment,
+                0.0,
+                egui::text::TextFormat {
+                    font_id: font_id.clone(),
+                    color: base_fmt.color,
+                    background: theme.keyword_highlight_bg,
+                    ..Default::default()
+                },
+            ),
         }
-        pos = end;
+        pos = range.end;
     }
+    if pos < text.len() {
+        job.append(&text[pos..], 0.0, base_fmt);
+    }
+}
+
+/// Add only the portions not covered by a higher-priority highlight, then add
+/// the complete range to the sorted coverage set for lower-priority passes.
+fn add_highlight_span(
+    spans: &mut Vec<(std::ops::Range<usize>, Hl)>,
+    covered: &mut Vec<std::ops::Range<usize>>,
+    range: std::ops::Range<usize>,
+    hl: Hl,
+) {
+    let mut cursor = range.start;
+    for existing in covered.iter() {
+        if existing.end <= cursor {
+            continue;
+        }
+        if existing.start >= range.end {
+            break;
+        }
+        if cursor < existing.start {
+            spans.push((cursor..existing.start.min(range.end), hl));
+        }
+        cursor = cursor.max(existing.end);
+        if cursor >= range.end {
+            break;
+        }
+    }
+    if cursor < range.end {
+        spans.push((cursor..range.end, hl));
+    }
+
+    let mut merged = range;
+    let first = covered.partition_point(|existing| existing.end < merged.start);
+    let mut last = first;
+    while last < covered.len() && covered[last].start <= merged.end {
+        merged.start = merged.start.min(covered[last].start);
+        merged.end = merged.end.max(covered[last].end);
+        last += 1;
+    }
+    covered.splice(first..last, std::iter::once(merged));
 }
 
 #[cfg(test)]
@@ -1418,6 +1478,32 @@ mod tests {
     }
 
     #[test]
+    fn vertical_navigation_prefers_search_occurrences_then_visible_lines() {
+        let path = write_temp(
+            "2026-07-19T10:00:00.000Z alpha\n\
+             2026-07-19T10:00:01.000Z beta\n\
+             2026-07-19T10:00:02.000Z gamma\n",
+        );
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+
+        tab.context_line = Some(1);
+        navigate_vertical(&mut tab, false);
+        assert_eq!(tab.context_line, Some(0));
+
+        tab.find_matches = vec![0, 2];
+        tab.find_pos = Some(0);
+        navigate_vertical(&mut tab, true);
+        assert_eq!(tab.context_line, Some(2));
+        assert_eq!(tab.find_pos, Some(1));
+        navigate_vertical(&mut tab, false);
+        assert_eq!(tab.context_line, Some(0));
+        assert_eq!(tab.find_pos, Some(0));
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
     fn keyword_at_mid_word() {
         assert_eq!(keyword_at("hello world", 2), Some("hello".to_string()));
     }
@@ -1438,6 +1524,23 @@ mod tests {
     #[test]
     fn keyword_at_past_eol_returns_none() {
         assert_eq!(keyword_at("hi", 5), None);
+    }
+
+    #[test]
+    fn display_text_truncates_at_a_utf8_boundary() {
+        let line = format!("{}é trailing", "a".repeat(MAX_DISPLAY_BYTES - 1));
+        let shown = display_text(&line);
+
+        assert!(shown.contains("truncated"));
+        assert!(shown.starts_with(&"a".repeat(MAX_DISPLAY_BYTES - 1)));
+        assert!(!shown.contains("é trailing"));
+    }
+
+    #[test]
+    fn visible_lines_range_uses_sorted_bounds() {
+        let lines = [1, 3, 7, 10, 11, 20];
+        assert_eq!(visible_lines_in_range(&lines, 3, 11), &[3, 7, 10, 11]);
+        assert!(visible_lines_in_range(&lines, 12, 19).is_empty());
     }
 
     #[test]
@@ -1490,6 +1593,41 @@ mod tests {
                 .any(|s| s.format.background == theme.keyword_highlight_bg),
             "keyword match must carry the keyword highlight background"
         );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn higher_priority_highlight_wins_over_filter() {
+        let path = write_temp("error\n");
+        let doc = LogDocument::open(&path).unwrap();
+        let theme = Theme::dark();
+        let font_id = crate::ui::fonts::log_font(12.0);
+        let filters = [Filter {
+            text: "error".to_owned(),
+            color: Color32::RED,
+        }];
+        let filter_ac = logotomy::core::search::build_automaton(&["error".to_owned()]);
+        let search_ac = logotomy::core::search::build_find_automaton("error", true);
+        let hl = Highlights {
+            filters: &filters,
+            filter_ac: filter_ac.as_ref(),
+            search_ac: search_ac.as_ref(),
+            keyword_ac: None,
+        };
+
+        let job = line_job(&doc, &hl, 0, false, font_id, &theme);
+        assert!(job
+            .sections
+            .iter()
+            .any(|s| s.format.background == theme.search_highlight_bg));
+        assert!(!job.sections.iter().any(|s| s.format.background
+            == Color32::from_rgba_unmultiplied(
+                Color32::RED.r(),
+                Color32::RED.g(),
+                Color32::RED.b(),
+                51
+            )));
 
         std::fs::remove_file(path).ok();
     }

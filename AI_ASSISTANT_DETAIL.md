@@ -27,17 +27,17 @@ Rust, eframe/egui (GUI), memmap2 (mmap I/O), memchr (SIMD line indexing), aho-co
 ## Key features & related files
 | Feature | Files |
 |---|---|
-| Memory-mapped loading + SIMD indexing | `src/core/document.rs` |
+| Memory-mapped loading + compact per-line index (`offset`, forward-filled timestamp, template ID) + SIMD indexing; staged background live-tail updates | `src/core/document.rs`, `src/ui/app/model.rs` |
 | Log format detection & normalization (JSON, CEF, RFC 5424, Apple ULS, logcat brief, OSLog console, plain) | `src/core/format/` |
 | Auto timestamp detection (14 built-in families: ISO-8601, YYYY/MM/DD, MM/DD/YYYY, MM-DD-YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY.MM.DD, BSD syslog, Apache CLF, RFC 2822, epoch, logcat threadtime, glog, ISO-8601 12h AM/PM, + user-defined custom) | `src/core/time/` |
 | Drain template mining (native Rust) | `src/core/drain.rs` |
-| Pre-mining masking (IPs, UUIDs, paths, JSON, numbers → semantic placeholders) | `src/core/masking.rs` |
-| Aho-Corasick multi-filter search | `src/core/search.rs` |
+| Pre-mining masking (IPs, UUIDs, paths, JSON, numbers → semantic placeholders; bounded 65,536-entry token cache) | `src/core/masking.rs` |
+| Aho-Corasick multi-filter search (including compact `u32` GUI match indexes) | `src/core/search.rs` |
 | Single-pattern find box / keyword highlight (`find_lines`, `build_find_automaton`) | `src/core/search.rs` |
 | Persistent settings (JSON, ~/.logotomy/settings.json) | `src/core/settings.rs` |
 | Custom date recognizers (regex + named groups, verified live, saved to ~/.logotomy/custom_date_format_list.json) | `src/core/time/custom.rs`, `src/core/settings.rs`, `src/ui/custom_date/` |
-| Timeline histogram + filter lanes (zoom/pan, full-height, 1px density lines, eye-toggle + trash per lane, "Everything Else" lane, smart axis labels with duration, minimap, fixed-height always-visible panel, hover tooltip with full filter text + match count, bottom "Show/Hide all filters" + "Clear all filters" toolbar) | `src/core/timeline.rs`, `src/ui/timeline/` |
-| Virtualized multi-tab log view | `src/ui/log_view/` |
+| Timeline histogram + filter lanes (zoom/pan, screen-pixel-aggregated painting, full-height, 1px density lines, eye-toggle + trash per lane, "Everything Else" lane, smart axis labels with duration, minimap, fixed-height always-visible panel, hover tooltip with full filter text + match count, bottom "Show/Hide all filters" + "Clear all filters" toolbar); filter-result timeline construction stays on the worker thread | `src/core/timeline.rs`, `src/ui/timeline/`, `src/ui/app/model.rs` |
+| Virtualized multi-tab log view (UTF-8-safe long-line cap, interval-based highlighting, shared filtered index; cancellable background rebuild after lane toggles) | `src/ui/log_view/`, `src/ui/app/model.rs` |
 | Log view find state + keyword highlight (`find_input`, `find_query`, `find_matches`, `find_pos`, `find_rx`, `keyword_highlight`, `keyword_automaton`) | `src/ui/app/model.rs` |
 | Embedded Space Mono log font — baked into the binary (`include_bytes!`), registered under a dedicated egui family so only log text uses it (SIL OFL 1.1, `OFL.txt` in `src/ui/fonts/Space_Mono/`) | `src/ui/fonts/`, `src/ui/log_view/`, `src/ui/pin_viewer/` |
 | Filter bookmarks (compact toolbar add + chip row; delete confirmations with optional "do not ask again") | `src/ui/filters.rs` |

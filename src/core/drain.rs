@@ -38,12 +38,13 @@ impl LogCluster {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Node {
     children: FxHashMap<String, Node>,
     cluster_ids: Vec<u32>,
 }
 
+#[derive(Clone)]
 pub struct Drain {
     depth: usize,
     sim_threshold: f64,

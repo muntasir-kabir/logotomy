@@ -12,7 +12,7 @@ use egui_dock::DockState;
 use log::{error, info};
 
 use crate::ui::{icons, theme::Theme};
-use logotomy::core::document::{LoadProgress, LoadStage, LogDocument, ParsingConfig};
+use logotomy::core::document::{FileChange, LoadProgress, LoadStage, LogDocument, ParsingConfig};
 use logotomy::core::saved_filter::SavedFilter;
 use logotomy::core::search;
 use logotomy::core::settings::Settings;
@@ -52,11 +52,31 @@ pub struct Filter {
     pub color: Color32,
 }
 
+/// Complete output of the background filter worker. Building timeline density
+/// and filter-point indexes walks the document, so it belongs beside the
+/// already-background Aho-Corasick scan rather than on the next UI frame.
+pub(crate) struct FilterScanResult {
+    matches: Arc<Vec<Vec<u32>>>,
+    timeline: Timeline,
+}
+
+/// Completed filtered-line index, built without holding up the UI after a
+/// lane visibility change.
+pub(crate) struct VisibleLinesResult {
+    visible_lines: Option<Arc<Vec<usize>>>,
+    preserve_anchor: Option<usize>,
+}
+
+struct TailUpdateResult {
+    doc: Box<LogDocument>,
+    old_line_count: usize,
+}
+
 pub struct LogTab {
     pub doc: Arc<LogDocument>,
     pub filters: Vec<Filter>,
     /// Per-filter sorted matching line indices.
-    pub matches: Vec<Vec<usize>>,
+    pub matches: Arc<Vec<Vec<u32>>>,
     pub timeline: Timeline,
     /// Line shown in the bottom context panel.
     pub context_line: Option<usize>,
@@ -66,13 +86,22 @@ pub struct LogTab {
     /// Zoom window on the timeline: (start_x, end_x) in epoch ms or line index.
     /// None = auto (full range).
     pub timeline_zoom: Option<(i64, i64)>,
-    /// The filter lane + point index of the currently selected diamond, if any.
+    /// The filter lane + real line index of the currently selected diamond, if any.
     pub selected_diamond: Option<(usize, usize)>,
+    /// The filter lane currently selected for left/right occurrence navigation.
+    pub selected_lane: Option<usize>,
+    /// One-shot UI message queued by a tab view and drained by the app toast.
+    pub pending_toast: Option<String>,
     pub filter_input: String,
     /// Automaton used for cheap per-line highlight of visible rows.
     pub highlighter: Option<Arc<AhoCorasick>>,
     /// In-flight background filter scan: result channel + cancel flag.
-    pub search_rx: Option<(Receiver<Vec<Vec<usize>>>, Arc<AtomicBool>)>,
+    pub search_rx: Option<(Receiver<FilterScanResult>, Arc<AtomicBool>)>,
+    /// In-flight visible-lines rebuild caused by toggling timeline lanes.
+    pub visible_rx: Option<(Receiver<VisibleLinesResult>, Arc<AtomicBool>)>,
+    /// In-flight staged append. The worker owns a detached document copy, so
+    /// tailing never mutates indexes while the UI is reading them.
+    tail_rx: Option<Receiver<Result<TailUpdateResult, String>>>,
     /// Per-filter lane active toggle (true = show lane + include in filter).
     pub lane_active: Vec<bool>,
     /// Whether the "Everything Else" lane (lines matching no filter) is active.
@@ -86,7 +115,7 @@ pub struct LogTab {
     /// When true, the fixed top panel is hidden and a detached viewport shows.
     pub timeline_detached: bool,
     /// Filtered visible line indices. None = all lines visible.
-    pub visible_lines: Option<Vec<usize>>,
+    pub visible_lines: Option<Arc<Vec<usize>>>,
     /// Font size for log view and context panel (points).
     pub log_font_size: f32,
     /// Saved pin entries.
@@ -155,7 +184,7 @@ pub struct LogTab {
 impl LogTab {
     pub(crate) fn new(doc: LogDocument) -> Self {
         let doc = Arc::new(doc);
-        let timeline = Timeline::build(&doc, &[], DEFAULT_BUCKETS);
+        let timeline = Timeline::build_u32(&doc, &[], DEFAULT_BUCKETS);
 
         // Set up the default dock layout. Timeline is a fixed top panel
         // (always fully visible), so the dock only contains Log + Pinned.
@@ -169,16 +198,20 @@ impl LogTab {
         LogTab {
             doc,
             filters: Vec::new(),
-            matches: Vec::new(),
+            matches: Arc::new(Vec::new()),
             timeline,
             context_line: None,
             pending_scroll: None,
             show_templates: false,
             timeline_zoom: None,
             selected_diamond: None,
+            selected_lane: None,
+            pending_toast: None,
             filter_input: String::new(),
             highlighter: None,
             search_rx: None,
+            visible_rx: None,
+            tail_rx: None,
             lane_active: Vec::new(),
             everything_else_active: true,
             pending_filter_removal: None,
@@ -241,89 +274,95 @@ impl LogTab {
         // preserved across a filter change.
         self.preserve_anchor = self.viewport_range.map(|(first, _)| first);
 
-        let all_active = self.everything_else_active && self.lane_active.iter().all(|&a| a);
-        if all_active {
-            self.visible_lines = None;
-            return;
-        }
-
-        let mut included = vec![false; n];
-        for (ki, active) in self.lane_active.iter().enumerate() {
-            if !active {
-                continue;
-            }
-            if let Some(matches) = self.matches.get(ki) {
-                for &ln in matches {
-                    if ln < n {
-                        included[ln] = true;
-                    }
-                }
-            }
-        }
-        if self.everything_else_active {
-            let mut matched = vec![false; n];
-            for matches in &self.matches {
-                for &ln in matches {
-                    if ln < n {
-                        matched[ln] = true;
-                    }
-                }
-            }
-            for (i, inc) in included.iter_mut().enumerate() {
-                if !matched[i] {
-                    *inc = true;
-                }
-            }
-        }
-
-        let visible: Vec<usize> = included
-            .iter()
-            .enumerate()
-            .filter(|(_, &inc)| inc)
-            .map(|(i, _)| i)
-            .collect();
-        self.visible_lines = if visible.len() == n {
-            None
-        } else {
-            Some(visible)
-        };
+        self.visible_lines = build_visible_lines(
+            n,
+            &self.matches,
+            &self.lane_active,
+            self.everything_else_active,
+            None,
+        );
 
         // Verify the preserved anchor is still in the new filter. If not,
         // fall back to the nearest still-visible line (or clear it if none).
+        self.resolve_preserve_anchor(n);
+        self.scroll_to_preserved_anchor();
+
+        if !self.find_query.is_empty() {
+            self.start_find(self.find_query.clone());
+        }
+    }
+
+    /// Rebuild the potentially multi-million-entry filtered index on a worker
+    /// after a lane toggle. The last completed index remains drawable until
+    /// this result arrives, keeping click/scroll input responsive.
+    pub fn rebuild_visible_lines_background(&mut self) {
+        if let Some((_, cancel)) = &self.visible_rx {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.visible_rx = None;
+        while self.lane_active.len() < self.filters.len() {
+            self.lane_active.push(true);
+        }
+        self.lane_active.truncate(self.filters.len());
+        let n = self.doc.total_lines();
+        let anchor = self.viewport_range.map(|(first, _)| first);
+        let matches = Arc::clone(&self.matches);
+        let active = self.lane_active.clone();
+        let everything_else_active = self.everything_else_active;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            let visible_lines = build_visible_lines(
+                n,
+                &matches,
+                &active,
+                everything_else_active,
+                Some(&cancel_worker),
+            );
+            if !cancel_worker.load(Ordering::Relaxed) {
+                let _ = tx.send(VisibleLinesResult {
+                    visible_lines,
+                    preserve_anchor: anchor,
+                });
+            }
+        });
+        self.visible_rx = Some((rx, cancel));
+    }
+
+    fn resolve_preserve_anchor(&mut self, n: usize) {
         if let Some(anchor) = self.preserve_anchor {
             let found = match &self.visible_lines {
                 Some(vis) => vis.binary_search(&anchor).is_ok(),
                 None => anchor < n,
             };
             if !found {
-                match &self.visible_lines {
-                    Some(vis) if !vis.is_empty() => {
-                        let insertion = vis.binary_search(&anchor).unwrap_or_else(|e| e);
-                        // Pick whichever of the two bracketing lines is closest.
-                        let nearest = match (
-                            insertion.checked_sub(1).map(|i| vis[i]),
-                            vis.get(insertion).copied(),
-                        ) {
-                            (Some(lower), Some(upper)) => {
-                                if anchor - lower <= upper - anchor {
-                                    lower
-                                } else {
-                                    upper
-                                }
-                            }
-                            (Some(lower), None) => lower,
-                            (None, Some(upper)) => upper,
-                            (None, None) => anchor,
-                        };
-                        self.preserve_anchor = Some(nearest);
+                self.preserve_anchor = self.visible_lines.as_ref().and_then(|vis| {
+                    let insertion = vis.binary_search(&anchor).unwrap_or_else(|e| e);
+                    match (
+                        insertion.checked_sub(1).map(|i| vis[i]),
+                        vis.get(insertion).copied(),
+                    ) {
+                        (Some(lower), Some(upper)) => Some(if anchor - lower <= upper - anchor {
+                            lower
+                        } else {
+                            upper
+                        }),
+                        (Some(lower), None) => Some(lower),
+                        (None, Some(upper)) => Some(upper),
+                        (None, None) => None,
                     }
-                    Some(_) | None => self.preserve_anchor = None,
-                }
+                });
             }
         }
+    }
 
-        if !self.find_query.is_empty() {
-            self.start_find(self.find_query.clone());
+    /// The log scroll area needs an explicit one-shot target after its row
+    /// count changes. A passive offset hint can be overridden by egui's saved
+    /// scroll state, which made lane toggles fall back to the first row.
+    fn scroll_to_preserved_anchor(&mut self) {
+        if let Some(anchor) = self.preserve_anchor.take() {
+            self.pending_scroll = Some(anchor);
         }
     }
 
@@ -335,6 +374,14 @@ impl LogTab {
         }
         if self.filters.len() == 1 {
             self.everything_else_active = true;
+        }
+        if self.selected_lane == Some(idx) {
+            self.selected_lane = None;
+            self.selected_diamond = None;
+        } else if let Some(selected) = self.selected_lane {
+            if selected > idx {
+                self.selected_lane = Some(selected - 1);
+            }
         }
         self.filters.remove(idx);
         self.rescan_filters();
@@ -348,6 +395,8 @@ impl LogTab {
         }
         self.filters.clear();
         self.everything_else_active = true;
+        self.selected_lane = None;
+        self.selected_diamond = None;
         self.rescan_filters();
     }
 
@@ -369,7 +418,7 @@ impl LogTab {
         if !self.lane_active.iter().any(|&a| a) && !self.everything_else_active {
             self.everything_else_active = true;
         }
-        self.rebuild_visible_lines();
+        self.rebuild_visible_lines_background();
     }
 
     /// Re-scan the document for the current filter set in the background.
@@ -377,6 +426,10 @@ impl LogTab {
         if let Some((_, cancel)) = &self.search_rx {
             cancel.store(true, Ordering::Relaxed);
         }
+        if let Some((_, cancel)) = &self.visible_rx {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.visible_rx = None;
         self.highlighter = search::build_automaton(
             &self
                 .filters
@@ -392,8 +445,10 @@ impl LogTab {
         self.lane_active.truncate(self.filters.len());
 
         if self.filters.is_empty() {
-            self.matches.clear();
-            self.timeline = Timeline::build(&self.doc, &[], DEFAULT_BUCKETS);
+            self.selected_lane = None;
+            self.selected_diamond = None;
+            self.matches = Arc::new(Vec::new());
+            self.timeline = Timeline::build_u32(&self.doc, &[], DEFAULT_BUCKETS);
             self.search_rx = None;
             self.rebuild_visible_lines();
             return;
@@ -404,9 +459,74 @@ impl LogTab {
         let filters: Vec<String> = self.filters.iter().map(|k| k.text.clone()).collect();
         let cancel_worker = Arc::clone(&cancel);
         std::thread::spawn(move || {
-            let _ = tx.send(search::scan_document(&doc, &filters, &cancel_worker));
+            let matches = Arc::new(search::scan_document_u32(&doc, &filters, &cancel_worker));
+            if cancel_worker.load(Ordering::Relaxed) {
+                return;
+            }
+            let timeline = Timeline::build_u32(&doc, &matches, DEFAULT_BUCKETS);
+            if !cancel_worker.load(Ordering::Relaxed) {
+                let _ = tx.send(FilterScanResult { matches, timeline });
+            }
         });
         self.search_rx = Some((rx, cancel));
+    }
+
+    /// Stage a disk append on a worker and install it atomically on completion.
+    /// This avoids UI-thread copy-on-write/indexing/template-mining when the
+    /// document is also shared with MCP.
+    fn start_tail_update(&mut self) {
+        if self.tail_rx.is_some() {
+            return;
+        }
+        let doc = Arc::clone(&self.doc);
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let old_line_count = doc.total_lines();
+            // Clone on this worker, not the UI thread. LogDocument::clone
+            // deliberately detaches mutable Drain/cache state.
+            let mut updated = (*doc).clone();
+            let result = match updated.append_new_data() {
+                Ok(true) => Ok(TailUpdateResult {
+                    doc: Box::new(updated),
+                    old_line_count,
+                }),
+                Ok(false) => Err("file no longer has appended data".to_string()),
+                Err(error) => Err(error),
+            };
+            let _ = tx.send(result);
+        });
+        self.tail_rx = Some(rx);
+    }
+
+    /// Install a completed staged append, returning the number of added lines
+    /// and file name for the app status message.
+    fn poll_tail_update(&mut self) -> Option<Result<(usize, String), String>> {
+        let rx = self.tail_rx.as_ref()?;
+        match rx.try_recv() {
+            Ok(Ok(result)) => {
+                let new_lines = result
+                    .doc
+                    .total_lines()
+                    .saturating_sub(result.old_line_count);
+                let file_name = result.doc.file_name.clone();
+                self.doc = Arc::new(*result.doc);
+                self.tail_rx = None;
+                self.stale = false;
+                self.rescan_filters();
+                Some(Ok((new_lines, file_name)))
+            }
+            Ok(Err(error)) => {
+                self.tail_rx = None;
+                Some(Err(error))
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => None,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.tail_rx = None;
+                Some(Err(
+                    "background append worker stopped unexpectedly".to_string()
+                ))
+            }
+        }
     }
 
     /// Clamp all doc-positioned view state to the current visible window.
@@ -560,6 +680,10 @@ impl LogTab {
             cancel.store(true, Ordering::Relaxed);
         }
         self.search_rx = None;
+        if let Some((_, cancel)) = &self.visible_rx {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.visible_rx = None;
 
         // Apply the trim to the document.
         let doc = Arc::make_mut(&mut self.doc);
@@ -603,6 +727,10 @@ impl LogTab {
             cancel.store(true, Ordering::Relaxed);
         }
         self.search_rx = None;
+        if let Some((_, cancel)) = &self.visible_rx {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.visible_rx = None;
 
         let doc = Arc::make_mut(&mut self.doc);
         doc.reset_trim();
@@ -632,15 +760,15 @@ impl LogTab {
         self.rescan_filters();
     }
 
-    /// Poll the background filter scan; rebuild the timeline when it lands.
+    /// Poll the background filter scan and install its already-built timeline.
     pub fn poll_search(&mut self) -> bool {
         let Some((rx, _)) = &self.search_rx else {
             return false;
         };
         match rx.try_recv() {
-            Ok(matches) => {
-                self.matches = matches;
-                self.timeline = Timeline::build(&self.doc, &self.matches, DEFAULT_BUCKETS);
+            Ok(result) => {
+                self.matches = result.matches;
+                self.timeline = result.timeline;
                 self.search_rx = None;
                 self.rebuild_visible_lines();
                 false
@@ -648,6 +776,31 @@ impl LogTab {
             Err(crossbeam_channel::TryRecvError::Empty) => true,
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
                 self.search_rx = None;
+                false
+            }
+        }
+    }
+
+    /// Poll a filtered-index rebuild started by a lane toggle.
+    pub fn poll_visible_lines(&mut self) -> bool {
+        let Some((rx, _)) = &self.visible_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.visible_lines = result.visible_lines;
+                self.preserve_anchor = result.preserve_anchor;
+                self.resolve_preserve_anchor(self.doc.total_lines());
+                self.scroll_to_preserved_anchor();
+                self.visible_rx = None;
+                if !self.find_query.is_empty() {
+                    self.start_find(self.find_query.clone());
+                }
+                false
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => true,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.visible_rx = None;
                 false
             }
         }
@@ -670,7 +823,10 @@ impl LogTab {
         self.find_pos = None;
 
         let doc = Arc::clone(&self.doc);
-        let subset = self.visible_lines.clone();
+        // Cloning the Arc is constant-time. Cloning a large filtered Vec here
+        // used to create a noticeable UI hitch just before the find worker
+        // began its background scan.
+        let subset = self.visible_lines.as_ref().map(Arc::clone);
         let needle = trimmed.to_string();
         let (tx, rx) = crossbeam_channel::bounded(1);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -678,7 +834,7 @@ impl LogTab {
         std::thread::spawn(move || {
             let _ = tx.send(search::find_lines(
                 &doc,
-                subset.as_deref(),
+                subset.as_deref().map(Vec::as_slice),
                 &needle,
                 true,
                 &cancel_worker,
@@ -699,8 +855,25 @@ impl LogTab {
                 if self.find_matches.is_empty() {
                     self.find_pos = None;
                 } else {
-                    self.find_pos = Some(0);
-                    self.goto_find_match(0);
+                    // Start at the result nearest the current Log View
+                    // viewport instead of always jumping to the first result
+                    // in the file. The viewport midpoint gives stable
+                    // behavior when several results are currently visible.
+                    let anchor = self
+                        .viewport_range
+                        .map(|(first, last)| first + (last.saturating_sub(first) / 2))
+                        .or(self.context_line)
+                        .unwrap_or(self.find_matches[0]);
+                    let start = nearest_occurrence(self.find_matches.iter().copied(), anchor)
+                        .map(|(position, _)| position)
+                        .unwrap_or(0);
+                    self.find_pos = Some(start);
+                    self.goto_find_match(start);
+                    if self.find_matches.len() > 1 {
+                        self.pending_toast = Some(
+                            "Up/Down Arrow to show previous/Next search occurrence".to_string(),
+                        );
+                    }
                 }
                 false
             }
@@ -736,12 +909,170 @@ impl LogTab {
         self.goto_find_match(prev);
     }
 
+    /// Move the selected Log View line to the adjacent visible line when no
+    /// search results are active. Filtered views use their visible-line index;
+    /// otherwise every document line is navigable.
+    pub fn select_adjacent_line(&mut self, next: bool) {
+        let total = self.doc.total_lines();
+        if total == 0 {
+            return;
+        }
+
+        let target = if let Some(visible) = self.visible_lines.as_deref() {
+            if visible.is_empty() {
+                return;
+            }
+            match self
+                .context_line
+                .and_then(|line| visible.binary_search(&line).ok())
+            {
+                Some(position) if next => visible[(position + 1).min(visible.len() - 1)],
+                Some(position) => visible[position.saturating_sub(1)],
+                None if next => visible[0],
+                None => visible[visible.len() - 1],
+            }
+        } else {
+            match self.context_line {
+                Some(line) if next => line.saturating_add(1).min(total - 1),
+                Some(line) => line.saturating_sub(1),
+                None => 0,
+            }
+        };
+
+        self.context_line = Some(target);
+        self.pending_scroll = Some(target);
+        self.sync_timeline_selection_to_line(target);
+        self.ensure_visible();
+    }
+
+    /// Select a filter lane for left/right occurrence navigation.
+    pub fn select_lane(&mut self, lane: usize) {
+        if lane >= self.filters.len() || lane >= self.matches.len() {
+            return;
+        }
+        self.selected_lane = Some(lane);
+        self.selected_diamond = None;
+        self.pending_toast =
+            Some("Left Arrow/Right Arrow to select previous/Next filter occurrence".to_string());
+    }
+
+    /// Move to the previous occurrence in the selected lane, wrapping around.
+    pub fn select_lane_previous(&mut self) {
+        self.navigate_selected_lane(false);
+    }
+
+    /// Move to the next occurrence in the selected lane, wrapping around.
+    pub fn select_lane_next(&mut self) {
+        self.navigate_selected_lane(true);
+    }
+
+    fn navigate_selected_lane(&mut self, next: bool) {
+        let Some(lane) = self.selected_lane else {
+            return;
+        };
+        let Some(matches) = self.matches.get(lane) else {
+            return;
+        };
+        if matches.is_empty() {
+            return;
+        }
+
+        let current = self
+            .selected_diamond
+            .filter(|(selected_lane, _)| *selected_lane == lane)
+            .map(|(_, line)| line)
+            .or(self.context_line);
+        let target = if let Some(current) = current {
+            if next {
+                matches
+                    .iter()
+                    .map(|&line| line as usize)
+                    .find(|&line| line > current)
+                    .unwrap_or(matches[0] as usize)
+            } else {
+                matches
+                    .iter()
+                    .rev()
+                    .map(|&line| line as usize)
+                    .find(|&line| line < current)
+                    .unwrap_or(*matches.last().unwrap() as usize)
+            }
+        } else if next {
+            matches[0] as usize
+        } else {
+            *matches.last().unwrap() as usize
+        };
+
+        self.context_line = Some(target);
+        self.pending_scroll = Some(target);
+        self.selected_diamond = Some((lane, target));
+        self.sync_navigation_positions(target);
+        self.ensure_visible();
+    }
+
+    /// Keep the lane and Log View search cursors aligned when both are active.
+    /// Each cursor moves to the nearest occurrence in its own sorted list.
+    pub(crate) fn sync_navigation_positions(&mut self, line: usize) {
+        if let Some(lane) = self.selected_lane {
+            if let Some(matches) = self.matches.get(lane) {
+                if let Some(nearest) = nearest_occurrence(matches.iter().map(|&m| m as usize), line)
+                {
+                    self.selected_diamond = Some((lane, nearest.1));
+                }
+            }
+        }
+        if let Some(nearest) = nearest_occurrence(self.find_matches.iter().copied(), line) {
+            self.find_pos = Some(nearest.0);
+        }
+    }
+
+    /// Update the selected diamond for a newly selected log line without
+    /// changing the user's selected lane. A line that does not match that
+    /// lane clears the diamond and its occurrence status.
+    pub(crate) fn sync_timeline_selection_to_line(&mut self, line: usize) {
+        if let Some(lane) = self.selected_lane {
+            let matches_line = self
+                .matches
+                .get(lane)
+                .is_some_and(|occurrences| occurrences.binary_search(&(line as u32)).is_ok())
+                && self.lane_active.get(lane).copied().unwrap_or(true);
+            self.selected_diamond = matches_line.then_some((lane, line));
+        } else {
+            self.selected_diamond = None;
+        }
+    }
+
+    /// Select a line chosen from the timeline. When a lane supplied the click,
+    /// that lane remains selected even if another lane also matches the line.
+    pub(crate) fn select_timeline_line(&mut self, line: usize, clicked_lane: Option<usize>) {
+        if let Some(lane) = clicked_lane {
+            self.selected_lane = Some(lane);
+            let matches_line = self
+                .matches
+                .get(lane)
+                .is_some_and(|occurrences| occurrences.binary_search(&(line as u32)).is_ok());
+            self.selected_diamond = matches_line.then_some((lane, line));
+        } else if self
+            .matches
+            .iter()
+            .any(|occurrences| occurrences.binary_search(&(line as u32)).is_ok())
+        {
+            self.sync_timeline_selection_to_line(line);
+        } else {
+            self.selected_diamond = None;
+        }
+        self.context_line = Some(line);
+        self.pending_scroll = Some(line);
+        self.ensure_visible();
+    }
+
     /// Jump to match index `i` (clamped to match list length).
     fn goto_find_match(&mut self, i: usize) {
         let line = self.find_matches[i.min(self.find_matches.len().saturating_sub(1))];
         self.find_pos = Some(i.min(self.find_matches.len().saturating_sub(1)));
         self.context_line = Some(line);
         self.pending_scroll = Some(line);
+        self.sync_timeline_selection_to_line(line);
         self.ensure_visible();
     }
 
@@ -803,6 +1134,15 @@ pub struct FileLoader {
     pub cancel: Arc<AtomicBool>,
     pub stage: LoadStage,
     pub progress: f32,
+}
+
+fn nearest_occurrence<I>(occurrences: I, line: usize) -> Option<(usize, usize)>
+where
+    I: Iterator<Item = usize>,
+{
+    occurrences
+        .enumerate()
+        .min_by_key(|&(_, occurrence)| (occurrence.abs_diff(line), occurrence))
 }
 
 pub struct LogotomyApp {
@@ -872,6 +1212,62 @@ pub struct LogotomyApp {
 
     // File update polling
     pub last_file_check: Option<Instant>,
+}
+
+/// Build the real-line index selected by timeline lanes. `None` is the compact
+/// all-lines representation. Cancellation is checked during every large walk.
+fn build_visible_lines(
+    n: usize,
+    matches: &[Vec<u32>],
+    lane_active: &[bool],
+    everything_else_active: bool,
+    cancel: Option<&AtomicBool>,
+) -> Option<Arc<Vec<usize>>> {
+    if n == 0 || (everything_else_active && lane_active.iter().all(|&a| a)) {
+        return None;
+    }
+    let cancelled =
+        |i: usize| i % 16_384 == 0 && cancel.is_some_and(|flag| flag.load(Ordering::Relaxed));
+    let mut included = vec![everything_else_active; n];
+    if everything_else_active {
+        for filter_matches in matches {
+            for (i, &line) in filter_matches.iter().enumerate() {
+                if cancelled(i) {
+                    return None;
+                }
+                let line = line as usize;
+                if line < n {
+                    included[line] = false;
+                }
+            }
+        }
+    }
+    for (filter_idx, &active) in lane_active.iter().enumerate() {
+        if !active {
+            continue;
+        }
+        if let Some(filter_matches) = matches.get(filter_idx) {
+            for (i, &line) in filter_matches.iter().enumerate() {
+                if cancelled(i) {
+                    return None;
+                }
+                let line = line as usize;
+                if line < n {
+                    included[line] = true;
+                }
+            }
+        }
+    }
+    let mut visible = Vec::with_capacity(n);
+    for (line, &is_included) in included.iter().enumerate() {
+        if cancelled(line) {
+            return None;
+        }
+        if is_included {
+            visible.push(line);
+        }
+    }
+    (visible.len() != n).then(|| Arc::new(visible))
 }
 
 /// Render the detected format + date format summary for a document.
@@ -1071,34 +1467,51 @@ impl LogotomyApp {
     pub fn check_for_file_updates(&mut self) {
         if let Some(active_idx) = self.active {
             if let Some(tab) = self.tabs.get_mut(active_idx) {
-                let old_line_count = tab.doc.total_lines();
-                let doc = Arc::make_mut(&mut tab.doc);
-                match doc.append_new_data() {
-                    Ok(true) => {
-                        let new_lines = doc.total_lines() - old_line_count;
-                        let file_name = doc.file_name.clone();
-                        self.status = format!("Loaded {new_lines} new lines from '{file_name}'.");
-                        let _ = doc;
-                        tab.stale = false;
-                        tab.rescan_filters();
-                        log::info!(
-                            "File {} was appended. Loaded {} new lines.",
-                            file_name,
-                            new_lines
-                        );
+                // Probe first while the document is still shared. In GUI+MCP
+                // mode the server intentionally holds another Arc, so calling
+                // Arc::make_mut before this check cloned every per-line index
+                // every two seconds even when the file was unchanged.
+                match tab.doc.file_change() {
+                    Ok(FileChange::Unchanged) => {}
+                    Ok(FileChange::Appended) => {
+                        tab.start_tail_update();
                     }
-                    Ok(false) => { /* No change, do nothing. */ }
-                    Err(e) => {
-                        // This now handles both shrinking and in-place modification.
+                    Ok(FileChange::Shrunk | FileChange::Modified) => {
+                        let file_name = tab.doc.file_name.clone();
                         log::warn!(
-                            "File {} changed on disk and requires a full reload: {}",
-                            doc.file_name,
-                            e
+                            "File {} changed on disk and requires a full reload",
+                            file_name
                         );
-                        self.status = format!("'{}' changed on disk — only tailing is supported. Close and reopen the file.", doc.file_name);
-                        let _ = doc;
+                        self.status = format!("'{file_name}' changed on disk — only tailing is supported. Close and reopen the file.");
                         tab.stale = true;
                     }
+                    Err(e) => {
+                        log::warn!("failed to check {} for updates: {e}", tab.doc.file_name);
+                        self.status =
+                            format!("failed to check '{}' for updates: {e}", tab.doc.file_name);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Install completed background tail updates before checking for further
+    /// changes, so a steady writer coalesces into the next staged append.
+    pub fn poll_tail_updates(&mut self) {
+        for tab in &mut self.tabs {
+            let Some(result) = tab.poll_tail_update() else {
+                continue;
+            };
+            match result {
+                Ok((new_lines, file_name)) => {
+                    self.status = format!("Loaded {new_lines} new lines from '{file_name}'.");
+                    log::info!("File {file_name} was appended. Loaded {new_lines} new lines.");
+                }
+                Err(error) => {
+                    let file_name = tab.doc.file_name.clone();
+                    log::warn!("File {file_name} append failed: {error}");
+                    self.status = format!("'{file_name}' changed on disk — only tailing is supported. Close and reopen the file.");
+                    tab.stale = true;
                 }
             }
         }
@@ -1328,6 +1741,9 @@ impl LogotomyApp {
         }
         info!("closing tab {} ({})", idx, self.tabs[idx].doc.file_name);
         if let Some((_, cancel)) = &self.tabs[idx].search_rx {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some((_, cancel)) = &self.tabs[idx].visible_rx {
             cancel.store(true, Ordering::Relaxed);
         }
         if let Some((_, cancel)) = &self.tabs[idx].find_rx {
@@ -1673,6 +2089,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn visible_line_builder_applies_everything_else_and_lane_toggles() {
+        let matches = vec![vec![1, 3, 6], vec![3, 4]];
+
+        let only_everything_else =
+            build_visible_lines(8, &matches, &[false, false], true, None).unwrap();
+        assert_eq!(&*only_everything_else, &[0, 2, 5, 7]);
+
+        let first_lane_only =
+            build_visible_lines(8, &matches, &[true, false], false, None).unwrap();
+        assert_eq!(&*first_lane_only, &[1, 3, 6]);
+
+        assert!(build_visible_lines(8, &matches, &[true, true], true, None).is_none());
+    }
+
+    #[test]
     fn gui_mcp_instruction_is_actionable_and_safe() {
         let prompt =
             LogotomyApp::build_mcp_instruction("http://127.0.0.1:4321/123456", "/tmp/example.log");
@@ -1888,6 +2319,95 @@ mod tests {
         assert!(tab.lane_active.iter().all(|&a| !a));
         assert!(tab.everything_else_active);
 
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn background_visible_rebuild_installs_lane_selection() {
+        let path = write_temp("alpha\nbeta\nalpha beta\ngamma\n");
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+        tab.filters = vec![
+            Filter {
+                text: "alpha".into(),
+                color: Theme::light().filter_colors[0],
+            },
+            Filter {
+                text: "beta".into(),
+                color: Theme::light().filter_colors[1],
+            },
+        ];
+        tab.matches = Arc::new(vec![vec![0, 2], vec![1, 2]]);
+        tab.lane_active = vec![true, false];
+        tab.everything_else_active = false;
+        tab.rebuild_visible_lines_background();
+        for _ in 0..100 {
+            if !tab.poll_visible_lines() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(tab.visible_lines.as_deref(), Some(&vec![0, 2]));
+        assert!(tab.visible_rx.is_none());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn background_visible_rebuild_scrolls_to_nearest_remaining_viewport_line() {
+        let path = write_temp("l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n");
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+        tab.filters = vec![Filter {
+            text: "match".into(),
+            color: Theme::light().filter_colors[0],
+        }];
+        // The old viewport begins at line 5. The new filter leaves 3 and 8
+        // around it; 3 is the nearest remaining real line.
+        tab.matches = Arc::new(vec![vec![1, 3, 8]]);
+        tab.lane_active = vec![true];
+        tab.everything_else_active = false;
+        tab.viewport_range = Some((5, 7));
+        tab.rebuild_visible_lines_background();
+        for _ in 0..100 {
+            if !tab.poll_visible_lines() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(tab.visible_lines.as_deref(), Some(&vec![1, 3, 8]));
+        assert_eq!(tab.pending_scroll, Some(3));
+        assert_eq!(tab.preserve_anchor, None);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn background_tail_update_swaps_in_appended_document() {
+        use std::io::Write;
+
+        let path = write_temp("2026-07-19T10:00:00.000Z INFO first\n");
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+        std::fs::File::options()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"2026-07-19T10:00:01.000Z WARN second\n")
+            .unwrap();
+        tab.start_tail_update();
+        let mut result = None;
+        for _ in 0..100 {
+            if let Some(update) = tab.poll_tail_update() {
+                result = Some(update.unwrap());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            result,
+            Some((1, path.file_name().unwrap().to_string_lossy().into()))
+        );
+        assert_eq!(tab.doc.total_lines(), 2);
+        assert!(tab.tail_rx.is_none());
         std::fs::remove_file(path).ok();
     }
 
@@ -2135,6 +2655,26 @@ mod tests {
         tab.find_prev();
         assert!(tab.find_pos.is_none());
 
+        // With no search results, Up/Down moves the selected log line and
+        // clamps at the document boundaries.
+        tab.context_line = Some(1);
+        tab.select_adjacent_line(false);
+        assert_eq!(tab.context_line, Some(0));
+        tab.select_adjacent_line(true);
+        assert_eq!(tab.context_line, Some(1));
+        tab.select_adjacent_line(true);
+        assert_eq!(tab.context_line, Some(2));
+        tab.select_adjacent_line(true);
+        assert_eq!(tab.context_line, Some(2));
+
+        // Filtered Log View navigation skips hidden lines.
+        tab.visible_lines = Some(Arc::new(vec![0, 2]));
+        tab.context_line = Some(0);
+        tab.select_adjacent_line(true);
+        assert_eq!(tab.context_line, Some(2));
+        tab.select_adjacent_line(false);
+        assert_eq!(tab.context_line, Some(0));
+
         // Two matches: wrap around.
         tab.find_matches = vec![0, 2];
         tab.find_pos = Some(0);
@@ -2146,6 +2686,76 @@ mod tests {
         assert_eq!(tab.find_pos, Some(1));
         tab.find_prev();
         assert_eq!(tab.find_pos, Some(0));
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn selected_lane_navigation_wraps_and_updates_log_selection() {
+        let path = write_temp(
+            "2026-07-19T10:00:00.000Z first\n\
+             2026-07-19T10:00:01.000Z second\n\
+             2026-07-19T10:00:02.000Z third\n\
+             2026-07-19T10:00:03.000Z fourth\n",
+        );
+        let doc = LogDocument::open(&path).unwrap();
+        let mut tab = LogTab::new(doc);
+        tab.filters.push(Filter {
+            text: "error".to_string(),
+            color: Color32::RED,
+        });
+        tab.matches = Arc::new(vec![vec![1, 3]]);
+        tab.find_matches = vec![0, 2];
+        tab.find_pos = Some(0);
+
+        tab.select_lane(0);
+        assert_eq!(tab.selected_lane, Some(0));
+        assert!(tab
+            .pending_toast
+            .as_deref()
+            .is_some_and(|message| message.contains("Left Arrow/Right Arrow")));
+
+        tab.select_lane_next();
+        assert_eq!(tab.context_line, Some(1));
+        assert_eq!(tab.selected_diamond, Some((0, 1)));
+        assert_eq!(tab.find_pos, Some(0));
+        tab.select_lane_next();
+        assert_eq!(tab.context_line, Some(3));
+        assert_eq!(tab.find_pos, Some(1));
+        tab.select_lane_next();
+        assert_eq!(tab.context_line, Some(1));
+        tab.select_lane_previous();
+        assert_eq!(tab.context_line, Some(3));
+        assert_eq!(tab.pending_scroll, Some(3));
+
+        // Search navigation moves the selected lane cursor to its nearest
+        // filter occurrence as well.
+        tab.find_pos = Some(0);
+        tab.find_next();
+        assert_eq!(tab.context_line, Some(2));
+        assert_eq!(tab.selected_diamond, None);
+
+        // A selected log line updates only the already selected lane; it never
+        // changes the lane just because another filter matches the line.
+        tab.matches = Arc::new(vec![vec![1, 3], vec![1, 4]]);
+        tab.selected_lane = Some(1);
+        tab.sync_timeline_selection_to_line(1);
+        assert_eq!(tab.selected_diamond, Some((1, 1)));
+        tab.sync_timeline_selection_to_line(3);
+        assert_eq!(tab.selected_lane, Some(1));
+        assert_eq!(tab.selected_diamond, None);
+        tab.sync_timeline_selection_to_line(2);
+        assert_eq!(tab.selected_lane, Some(1));
+        assert_eq!(tab.selected_diamond, None);
+
+        // An arbitrary timeline click keeps the clicked lane, even when the
+        // line matches a different lane.
+        tab.select_timeline_line(3, Some(1));
+        assert_eq!(tab.context_line, Some(3));
+        assert_eq!(tab.selected_lane, Some(1));
+        assert_eq!(tab.selected_diamond, None);
+        tab.select_timeline_line(4, Some(1));
+        assert_eq!(tab.selected_diamond, Some((1, 4)));
 
         std::fs::remove_file(path).ok();
     }
@@ -2177,7 +2787,8 @@ mod tests {
         );
         let doc = LogDocument::open(&path).unwrap();
         let mut tab = LogTab::new(doc);
-        tab.visible_lines = Some(vec![0, 2, 3]);
+        tab.visible_lines = Some(Arc::new(vec![0, 2, 3]));
+        tab.viewport_range = Some((2, 3));
 
         tab.start_find("err".to_string());
         for _ in 0..200 {
@@ -2187,8 +2798,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(tab.find_matches, vec![0, 2]);
-        assert_eq!(tab.find_pos, Some(0));
-        assert_eq!(tab.context_line, Some(0));
+        assert_eq!(tab.find_pos, Some(1));
+        assert_eq!(tab.context_line, Some(2));
+        assert_eq!(
+            tab.pending_toast.as_deref(),
+            Some("Up/Down Arrow to show previous/Next search occurrence")
+        );
 
         std::fs::remove_file(path).ok();
     }

@@ -30,6 +30,18 @@ pub struct Timeline {
 
 impl Timeline {
     pub fn build(doc: &LogDocument, filter_matches: &[Vec<usize>], n_buckets: usize) -> Self {
+        Self::build_from_matches(doc, filter_matches, n_buckets)
+    }
+
+    /// Build from the GUI's compact 32-bit match indexes.
+    pub fn build_u32(doc: &LogDocument, filter_matches: &[Vec<u32>], n_buckets: usize) -> Self {
+        Self::build_from_matches(doc, filter_matches, n_buckets)
+    }
+
+    fn build_from_matches<T>(doc: &LogDocument, filter_matches: &[Vec<T>], n_buckets: usize) -> Self
+    where
+        T: Copy + TryInto<usize>,
+    {
         let n_lines = doc.total_lines();
         let domain = match doc.time_range {
             Some((a, b)) if b > a => TimelineDomain::Time {
@@ -75,7 +87,10 @@ impl Timeline {
         for matches in filter_matches {
             let mut kb = vec![0u32; nb];
             let mut pts = Vec::with_capacity(matches.len());
-            for &ln in matches {
+            for &line in matches {
+                let Ok(ln) = line.try_into() else {
+                    continue;
+                };
                 let v = x_of_line(ln);
                 if v < 0 {
                     continue;
